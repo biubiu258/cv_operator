@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="page-title">新建定向简历</div>
+    <div class="page-title">{{ editId ? '继续生成简历' : '新建定向简历' }}</div>
     <div class="page-sub">粘贴岗位 JD，AI 解析并生成必要问题，随后输出含定制自我评价的定向简历</div>
 
     <div class="card-panel">
@@ -125,12 +125,14 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api'
 
 const router = useRouter()
+const route = useRoute()
+const editId = computed(() => route.params.id)
 
 const MODULES = [
   { key: 'summary', label: '个人简介' },
@@ -209,12 +211,7 @@ async function submitAnswers() {
       answer: Array.isArray(ans[q.id]) ? ans[q.id].join('、') : (ans[q.id] || '')
     }))
     await http.post(`/resumes/${resumeId.value}/answers`, { answers })
-
-    const se = await http.post(`/self-evaluation/questions?resume_id=${resumeId.value}`)
-    seQuestions.value = se.questions || []
-    seQuestions.value.forEach((q) => {
-      seAns[q.id] = q.type === 'multi' ? [] : ''
-    })
+    await fetchSeQuestions()
     step.value = 4
   } finally {
     busy.value = false

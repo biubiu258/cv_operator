@@ -12,6 +12,7 @@ const routes = [
       { path: 'profile/:id', name: 'profile-edit', component: () => import('@/views/ProfileEdit.vue'), meta: { title: '编辑档案' } },
       { path: 'resumes', name: 'resumes', component: () => import('@/views/ResumeList.vue'), meta: { title: '简历任务' } },
       { path: 'resume/new', name: 'resume-new', component: () => import('@/views/ResumeNew.vue'), meta: { title: '新建定向简历' } },
+      { path: 'resume/:id/edit', name: 'resume-edit', component: () => import('@/views/ResumeNew.vue'), meta: { title: '继续生成简历' } },
       { path: 'resume/:id', name: 'resume-detail', component: () => import('@/views/ResumeDetail.vue'), meta: { title: '简历详情' } },
       { path: 'llm', name: 'llm', component: () => import('@/views/LlmConfig.vue'), meta: { title: 'LLM 配置' } }
     ]

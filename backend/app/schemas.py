@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 # ---------- 子实体 ----------
@@ -165,11 +165,11 @@ class ResumeOut(BaseModel):
     id: int
     user_id: int
     jd_text: str
-    jd_summary: dict
+    jd_summary: dict = {}
     target_position: str
     sections: list = []
     status: str
-    questions: list
+    questions: list = []
     answers: list = []
     fabricated: list = []
     interview_prep: dict = {}
@@ -179,3 +179,13 @@ class ResumeOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("jd_summary", "interview_prep", mode="before")
+    @classmethod
+    def _coerce_dict(cls, v):
+        return v if isinstance(v, dict) else {}
+
+    @field_validator("questions", "answers", "fabricated", "sections", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        return v if isinstance(v, list) else []
