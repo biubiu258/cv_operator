@@ -22,6 +22,9 @@ for _col, _ddl in (
     ("expected_salary", "ALTER TABLE resumes ADD COLUMN expected_salary VARCHAR(50)"),
     ("include_salary", "ALTER TABLE resumes ADD COLUMN include_salary BOOLEAN"),
     ("template", "ALTER TABLE resumes ADD COLUMN template VARCHAR(30)"),
+    ("length", "ALTER TABLE resumes ADD COLUMN length VARCHAR(20)"),
+    ("custom_pages", "ALTER TABLE resumes ADD COLUMN custom_pages INTEGER"),
+    ("output_paths", "ALTER TABLE resumes ADD COLUMN output_paths JSON"),
 ):
     if _col not in _resume_cols:
         with engine.begin() as _conn:
@@ -35,17 +38,34 @@ if "hobbies" not in _user_cols:
 if "expected_salary" not in _user_cols:
     with engine.begin() as _conn:
         _conn.execute(text("ALTER TABLE users ADD COLUMN expected_salary VARCHAR(50)"))
+if "graduation_date" not in _user_cols:
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE users ADD COLUMN graduation_date VARCHAR(30)"))
+if "avatar" not in _user_cols:
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE users ADD COLUMN avatar VARCHAR(300)"))
 
 # 回填历史数据中的 NULL（旧行在 ALTER TABLE 加列后为 NULL，避免响应校验报 string_type 错误）
 with engine.begin() as _conn:
     _conn.execute(text("UPDATE users SET hobbies = '' WHERE hobbies IS NULL"))
     _conn.execute(text("UPDATE users SET expected_salary = '' WHERE expected_salary IS NULL"))
+    _conn.execute(text("UPDATE users SET graduation_date = '' WHERE graduation_date IS NULL"))
+    _conn.execute(text("UPDATE users SET avatar = '' WHERE avatar IS NULL"))
     _conn.execute(text("UPDATE resumes SET progress = '' WHERE progress IS NULL"))
     _conn.execute(text("UPDATE resumes SET expected_salary = '' WHERE expected_salary IS NULL"))
     _conn.execute(text("UPDATE resumes SET include_salary = 1 WHERE include_salary IS NULL"))
     _conn.execute(text("UPDATE resumes SET template = 'classic' WHERE template IS NULL"))
+    _conn.execute(text("UPDATE resumes SET length = 'fresh' WHERE length IS NULL"))
+    _conn.execute(text("UPDATE resumes SET output_paths = '{}' WHERE output_paths IS NULL"))
 
 app = FastAPI(title="AI 简历生成器", version="0.1.0")
+
+# 头像等上传文件的静态服务
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+from .config import UPLOAD_DIR  # noqa: E402
+
+app.mount("/static", StaticFiles(directory=str(UPLOAD_DIR)), name="static")
 
 app.add_middleware(
     CORSMiddleware,

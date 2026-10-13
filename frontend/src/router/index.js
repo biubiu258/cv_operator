@@ -13,10 +13,18 @@ const routes = [
       { path: 'resumes', name: 'resumes', component: () => import('@/views/ResumeList.vue'), meta: { title: '简历任务' } },
       { path: 'resume/new', name: 'resume-new', component: () => import('@/views/ResumeNew.vue'), meta: { title: '新建定向简历' } },
       { path: 'resume/:id/edit', name: 'resume-edit', component: () => import('@/views/ResumeNew.vue'), meta: { title: '继续生成简历' } },
+      { path: 'resume/:id/review', name: 'resume-review', component: () => import('@/views/ResumeReview.vue'), meta: { title: '生成回顾' } },
       { path: 'resume/:id', name: 'resume-detail', component: () => import('@/views/ResumeDetail.vue'), meta: { title: '简历详情' } },
       { path: 'se-records', name: 'se-records', component: () => import('@/views/SelfEvalRecords.vue'), meta: { title: '自我评价库' } },
       { path: 'llm', name: 'llm', component: () => import('@/views/LlmConfig.vue'), meta: { title: 'LLM 配置' } }
     ]
+  },
+  {
+    // 网页模板预览：独立整页（不走 MainLayout），保证打印时无侧边栏等干扰
+    path: '/resume/:id/preview',
+    name: 'resume-preview',
+    component: () => import('@/views/ResumePreview.vue'),
+    meta: { title: '简历预览' }
   }
 ]
 

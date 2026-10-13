@@ -19,10 +19,11 @@
               <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right">
+          <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
               <el-button v-if="row.status !== 'generated'" size="small" type="warning" @click.stop="$router.push(`/resume/${row.id}/edit`)">继续</el-button>
               <el-button v-else size="small" @click.stop="$router.push(`/resume/${row.id}`)">查看</el-button>
+              <el-button size="small" text @click.stop="$router.push(`/resume/${row.id}/review`)">回顾</el-button>
             </template>
           </el-table-column>
           <el-table-column prop="created_at" label="创建时间" width="180" />

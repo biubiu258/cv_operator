@@ -1,18 +1,64 @@
-"""用户与档案路由（含多用户切换、子实体 CRUD）。"""
-from fastapi import APIRouter, Depends, HTTPException
+"""用户与档案路由（含多用户切换、子实体 CRUD、头像上传）。"""
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..config import AVATAR_DIR
 from ..database import get_db
 from ..deps import get_active_user
 
 router = APIRouter(tags=["users"])
+
+_AVATAR_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
 
 
 def _ensure_user(db: Session, user_id: int):
     user = db.get(models.User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    return user
+
+
+def _remove_avatar_file(avatar: str):
+    """删除旧头像文件（仅限本服务 avatars 目录内的相对路径，防路径穿越）。"""
+    if avatar and avatar.startswith("/static/avatars/"):
+        path = AVATAR_DIR / Path(avatar).name
+        path.unlink(missing_ok=True)
+
+
+@router.post("/users/{user_id}/avatar", response_model=schemas.UserOut)
+async def upload_avatar(user_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """上传个人头像：保存到 uploads/avatars/，数据库存 /static 相对路径。"""
+    user = _ensure_user(db, user_id)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _AVATAR_EXTS:
+        raise HTTPException(status_code=400, detail="仅支持图片文件（png/jpg/jpeg/gif/webp/bmp）")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="图片不能超过 5MB")
+    fname = f"avatar_{user_id}_{int(time.time())}{ext}"
+    (AVATAR_DIR / fname).write_bytes(data)
+    _remove_avatar_file(user.avatar)
+    user.avatar = f"/static/avatars/{fname}"
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}/avatar", response_model=schemas.UserOut)
+def remove_avatar(user_id: int, db: Session = Depends(get_db)):
+    """移除头像：清空字段并删除对应文件。"""
+    user = _ensure_user(db, user_id)
+    _remove_avatar_file(user.avatar)
+    user.avatar = ""
+    db.commit()
+    db.refresh(user)
     return user
 
 

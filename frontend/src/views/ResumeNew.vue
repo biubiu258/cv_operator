@@ -42,6 +42,18 @@
           </el-checkbox-group>
           <div class="text-muted" style="font-size:12px;margin-top:8px">已勾选的模块将写入简历；自我评价固定置于简历最下方一栏。</div>
 
+          <div style="font-weight:600;margin:20px 0 8px">简历篇幅</div>
+          <el-radio-group v-model="length">
+            <el-radio label="fresh">应届（目标一页）</el-radio>
+            <el-radio label="junior">1-5年（2页以内）</el-radio>
+            <el-radio label="senior">5年及以上（3页以内）</el-radio>
+            <el-radio label="custom">自定义篇幅</el-radio>
+          </el-radio-group>
+          <div v-if="length === 'custom'" style="margin-top:10px;display:flex;align-items:center;gap:8px">
+            <span class="text-muted" style="font-size:12px">目标页数</span>
+            <el-input-number v-model="customPages" :min="1" :max="10" />
+          </div>
+
           <div style="margin-top:20px">
             <el-button type="primary" :loading="busy" @click="createTask">创建任务并解析</el-button>
           </div>
@@ -264,6 +276,8 @@ const fabricateJd = ref('')
 const fabricateCount = ref(3)
 const fabricatePhase = ref('config')
 const userFeedback = ref('')
+const length = ref('fresh')
+const customPages = ref(2)
 
 // 进度推送：WebSocket（替代 HTTP 轮询），断线自动重连（最多 3 次，重连时提示用户）
 let progressWs = null
@@ -380,6 +394,8 @@ async function loadResume() {
   targetPosition.value = r.target_position || ''
   expectedSalary.value = r.expected_salary || ''
   includeSalary.value = r.include_salary !== false
+  length.value = r.length || 'fresh'
+  customPages.value = r.custom_pages || 2
   sections.value = (r.sections && r.sections.length) ? r.sections : MODULES.map((m) => m.key)
   jdSummary.value = r.jd_summary || {}
   fabricated.value = r.fabricated || []
@@ -462,7 +478,9 @@ async function createTask() {
       target_position: targetPosition.value,
       expected_salary: expectedSalary.value,
       include_salary: includeSalary.value,
-      sections: sections.value
+      sections: sections.value,
+      length: length.value,
+      custom_pages: length.value === 'custom' ? customPages.value : null
     })
     resumeId.value = r.id
     step.value = 1

@@ -9,6 +9,8 @@ def user_profile_dict(user) -> dict:
         "location": user.location,
         "target_position": user.target_position,
         "expected_salary": getattr(user, "expected_salary", ""),
+        "graduation_date": getattr(user, "graduation_date", ""),
+        "avatar": getattr(user, "avatar", ""),
         "hobbies": getattr(user, "hobbies", ""),
         "educations": [
             {

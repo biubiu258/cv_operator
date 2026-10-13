@@ -1,6 +1,7 @@
 """Word -> PDF 转换（可插拔）。"""
 import shutil
 import subprocess
+import traceback
 from pathlib import Path
 
 
@@ -30,6 +31,6 @@ def convert_docx_to_pdf(docx_path: str) -> str:
         if pdf.exists():
             return str(pdf)
     except Exception:
-        pass
+        traceback.print_exc()
 
     raise RuntimeError("PDF 转换失败：请安装 LibreOffice，或（Windows）安装 docx2pdf / Microsoft Word。")

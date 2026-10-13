@@ -1,7 +1,6 @@
 """简历：必要问题生成 + 个人简介 + .docx 生成。"""
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +11,9 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from . import llm_client
+from .prompting import get_length_budget, render_prompt
 
 PRIMARY = RGBColor(0x1F, 0x4E, 0x79)
-_SYSTEM = "你是一名资深技术招聘与简历专家。"
 
 
 # ---------- AI 生成部分 ----------
@@ -25,18 +24,14 @@ async def generate_resume_questions(
     api_key: str,
     model: str,
 ) -> list:
-    prompt = (
-        "请结合岗位 JD 与求职者现有档案，判断简历中还缺失或不确定的信息，"
-        "设计 3~5 个必要问题（用于补齐定向简历所需关键素材）。\n"
-        "只返回 JSON 数组（不要 markdown 代码块），每项结构：\n"
-        '{"id":"q1","type":"choice|multi|text","question":"问题内容","options":["选项"],"required":true}\n\n'
-        f"JD 解析结果：{json.dumps(jd_summary, ensure_ascii=False)}\n"
-        f"求职者档案：{json.dumps(user_profile, ensure_ascii=False)}\n\n"
-        "问题应聚焦：意向岗位确认、项目真实性与量化数据、JD 匹配的技术点等。"
+    system, prompt = render_prompt(
+        "resume_questions",
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        user_profile=json.dumps(user_profile, ensure_ascii=False),
     )
     raw = await llm_client.chat(
         base_url, api_key, model,
-        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.4, json_mode=True,
     )
     return _parse_questions(raw)
@@ -71,19 +66,20 @@ async def generate_personal_summary(
     base_url: str,
     api_key: str,
     model: str,
+    length: str = "fresh",
+    custom_pages: int = None,
 ) -> str:
-    prompt = (
-        "请为求职者写一段 2~3 行的个人简介（电梯陈述），3 秒讲清「我是谁 + 为什么匹配该岗位」，"
-        "包含技术栈速览。要求口语化、简洁、有针对性。\n"
-        "关键量化成果与核心技术栈用 ** 包裹（例如 **85%**、**FastAPI**），用于加粗高亮；"
-        "除此之外不要使用其他 markdown 语法。\n\n"
-        f"JD 解析结果：{json.dumps(jd_summary, ensure_ascii=False)}\n"
-        f"求职者档案：{json.dumps(user_profile, ensure_ascii=False)}\n\n"
-        "只输出简介正文，不要标题。"
+    budget = get_length_budget(length, custom_pages)
+    summary_hint = f"控制在 {budget['summary_max']} 句以内"
+    system, prompt = render_prompt(
+        "personal_summary",
+        summary_hint=summary_hint,
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        user_profile=json.dumps(user_profile, ensure_ascii=False),
     )
     return await llm_client.chat(
         base_url, api_key, model,
-        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.6,
     )
 
@@ -103,17 +99,16 @@ async def curate_skills(
         {"category": s["category"], "name": s["name"], "proficiency": s["proficiency"]}
         for s in skills
     ]
-    prompt = (
-        f"以下是求职者的专业技能列表（共 {len(items)} 项）。请从中挑选与岗位最相关、"
-        f"最值得写入简历的最多 {max_count} 项，并按与 JD 的匹配度从高到低排序。\n"
-        "只返回 JSON 数组（不要 markdown 代码块、不要额外文字），数组元素为技能名（字符串），"
-        "必须原样取自下面的列表，不要改动名称。\n\n"
-        f"岗位 JD 解析结果：{json.dumps(jd_summary, ensure_ascii=False)}\n"
-        f"技能列表：{json.dumps([s['name'] for s in items], ensure_ascii=False)}"
+    system, prompt = render_prompt(
+        "curate_skills",
+        total=len(items),
+        max_count=max_count,
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        skills=json.dumps([s["name"] for s in items], ensure_ascii=False),
     )
     raw = await llm_client.chat(
         base_url, api_key, model,
-        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.2, json_mode=True,
     )
     try:
@@ -142,7 +137,7 @@ DARK = RGBColor(0x2B, 0x2B, 0x2B)
 _EMPH_RE = re.compile(r"(\*\*.+?\*\*)")
 
 
-def _set_run(run, size=10.5, bold=False, color=DARK, italic=False):
+def _set_run(run, size=10, bold=False, color=DARK, italic=False):
     run.font.name = "Arial"
     run.font.size = Pt(size)
     run.font.bold = bold
@@ -182,7 +177,7 @@ def _rule(container, color="1F4E79", sz="10"):
     return p
 
 
-def _add_rich_runs(p, text, size=10, color=DARK, bold=False):
+def _add_rich_runs(p, text, size=9.5, color=DARK, bold=False):
     """渲染带强调标记的文本：**内容** 渲染为蓝色加粗，其余正常。"""
     for seg in _EMPH_RE.split(text or ""):
         if not seg:
@@ -197,12 +192,12 @@ def _add_rich_runs(p, text, size=10, color=DARK, bold=False):
 
 def _heading(container, text):
     p = _add_para(container)
-    p.paragraph_format.space_before = Pt(12)
-    p.paragraph_format.space_after = Pt(4)
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(3)
     r0 = p.add_run("■ ")
-    _set_run(r0, size=9, bold=True, color=ACCENT)
+    _set_run(r0, size=8.5, bold=True, color=ACCENT)
     r = p.add_run(text)
-    _set_run(r, size=12.5, bold=True, color=PRIMARY)
+    _set_run(r, size=11.5, bold=True, color=PRIMARY)
     _border(p, color="B7C9E2", sz="6", side="bottom", space="2")
     return p
 
@@ -212,14 +207,14 @@ def _entry_head(container, left, right, left_bold=True, tab_cm=17.3):
     p.paragraph_format.space_after = Pt(1)
     p.paragraph_format.tab_stops.add_tab_stop(Cm(tab_cm), WD_TAB_ALIGNMENT.RIGHT)
     r = p.add_run(left)
-    _set_run(r, size=11, bold=left_bold, color=DARK)
+    _set_run(r, size=10.5, bold=left_bold, color=DARK)
     if right:
         r2 = p.add_run("\t" + right)
-        _set_run(r2, size=9, color=GRAY)
+        _set_run(r2, size=8.5, color=GRAY)
     return p
 
 
-def _bullet(container, text, size=10, color=DARK):
+def _bullet(container, text, size=9.5, color=DARK):
     p = _add_para(container)
     p.paragraph_format.space_after = Pt(1)
     p.paragraph_format.left_indent = Cm(0.4)
@@ -346,9 +341,38 @@ def _enabled(sections, key):
     return not sections or key in sections
 
 
-def _merge_sections(user, fabricated):
-    """合并杜撰经历到项目/实习/工作/其他列表，返回四元组。"""
-    fake_projects = [SimpleNamespace(**x) for x in (fabricated or []) if x.get("type") == "project"]
+def _parse_ym(value: str):
+    """把 '2024.09' / '2024-9' / '至今' 等解析为 (年, 月)；空值返回 (0, 0)，至今返回极大值。"""
+    v = (value or "").strip()
+    if not v:
+        return (0, 0)
+    if v in ("至今", "现在") or v.lower() in ("now", "present"):
+        return (9999, 12)
+    m = re.match(r"(\d{4})\D?(\d{1,2})?", v)
+    if not m:
+        return (0, 0)
+    month = int(m.group(2)) if m.group(2) else 0
+    return (int(m.group(1)), month if 1 <= month <= 12 else 0)
+
+
+def _exp_sort_key(item):
+    """经历排序键：按结束时间新→旧；无结束时间时用开始时间。"""
+    end = _parse_ym(getattr(item, "end_date", ""))
+    return end if end != (0, 0) else _parse_ym(getattr(item, "start_date", ""))
+
+
+def _merge_sections(user, fabricated, limit=None):
+    """合并杜撰经历到项目/实习/工作/其他列表，按时间新→旧排序后返回四元组。limit 用于按篇幅裁剪。"""
+    # 字段统一带默认值，避免手工补充的杜撰经历缺字段导致渲染 AttributeError
+    fake_projects = [
+        SimpleNamespace(
+            title=x.get("title") or x.get("name", ""), role=x.get("role", ""),
+            start_date=x.get("start_date", ""), end_date=x.get("end_date", ""),
+            tech_stack=x.get("tech_stack", ""),
+            description=x.get("description", ""), result=x.get("result", ""),
+        )
+        for x in (fabricated or []) if x.get("type") == "project"
+    ]
     fake_internships = [
         SimpleNamespace(
             company=x.get("title", ""), position=x.get("role", ""),
@@ -377,6 +401,16 @@ def _merge_sections(user, fabricated):
     internships = list(user.internships) + fake_internships
     works = fake_works
     others = fake_others
+    # 经历按时间新→旧排列
+    projects.sort(key=_exp_sort_key, reverse=True)
+    internships.sort(key=_exp_sort_key, reverse=True)
+    works.sort(key=_exp_sort_key, reverse=True)
+    others.sort(key=_exp_sort_key, reverse=True)
+    if limit:
+        projects = projects[:limit]
+        internships = internships[:limit]
+        works = works[:limit]
+        others = others[:limit]
     return projects, internships, works, others
 
 
@@ -392,10 +426,26 @@ def _new_doc():
     return doc
 
 
-def _save_docx(doc, user, out_dir):
+_FILENAME_ILLEGAL = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def _resume_basename(user, target_position: str = "") -> str:
+    """产物规范命名：姓名-xx届-求职意向；缺失字段省略，姓名兜底必有。"""
+    parts = [(getattr(user, "name", "") or "").strip() or "简历"]
+    grad = (getattr(user, "graduation_date", "") or "").strip()
+    m = re.search(r"(\d{4})", grad)
+    if m:
+        parts.append(m.group(1)[2:] + "届")  # 2026 -> 26届
+    pos = (target_position or getattr(user, "target_position", "") or "").strip()
+    if pos:
+        parts.append(pos)
+    # 去除文件名非法字符，避免不同平台保存失败
+    return _FILENAME_ILLEGAL.sub("", "-".join(parts)) or "简历"
+
+
+def _save_docx(doc, user, out_dir, target_position: str = ""):
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"resume_{user.id}_{stamp}.docx"
+    fname = f"{_resume_basename(user, target_position)}.docx"
     out_path = out_dir / fname
     doc.save(str(out_path))
     return str(out_path)
@@ -404,23 +454,29 @@ def _save_docx(doc, user, out_dir):
 def build_resume_docx(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                       target_position: str = "", sections=None, fabricated=None,
                       skills_curated=None, expected_salary: str = "", include_salary: bool = True,
-                      template: str = "classic") -> str:
+                      template: str = "classic", length: str = "fresh",
+                      custom_pages: int = None) -> str:
     spec = TEMPLATES.get(template)
     if spec is None:
         raise ValueError(f"未知简历模板：{template}")
+    if spec.get("kind") == "vue":
+        raise ValueError(f"网页版模板不支持 Word 导出：{template}")
     return spec["render"](user, jd_summary, personal_summary, self_evaluation, out_dir,
                           target_position, sections, fabricated, skills_curated,
-                          expected_salary, include_salary)
+                          expected_salary, include_salary, length, custom_pages)
 
 
 def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                     target_position: str = "", sections=None, fabricated=None,
-                    skills_curated=None, expected_salary: str = "", include_salary: bool = True) -> str:
+                    skills_curated=None, expected_salary: str = "", include_salary: bool = True,
+                    length: str = "fresh", custom_pages: int = None) -> str:
     # sections 为空/None 表示包含全部模块；否则仅包含勾选模块
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
-    projects, internships, works, others = _merge_sections(user, fabricated)
+    budget = get_length_budget(length, custom_pages)
+    projects, internships, works, others = _merge_sections(
+        user, fabricated, limit=budget["max_experiences"])
 
     doc = _new_doc()
 
@@ -428,21 +484,21 @@ def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(0)
     r = p.add_run(user.name or "姓名")
-    _set_run(r, size=20, bold=True, color=PRIMARY)
+    _set_run(r, size=18, bold=True, color=PRIMARY)
 
     pos = target_position or user.target_position or jd_summary.get("position") or "软件工程师"
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(2)
     r = p.add_run(pos)
-    _set_run(r, size=12, bold=True, color=ACCENT)
+    _set_run(r, size=11.5, bold=True, color=ACCENT)
 
     if include_salary and expected_salary:
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
         r = p.add_run("期望薪资  ")
-        _set_run(r, size=10.5, bold=True, color=GRAY)
+        _set_run(r, size=10, bold=True, color=GRAY)
         r2 = p.add_run(expected_salary)
-        _set_run(r2, size=11, bold=True, color=ACCENT)
+        _set_run(r2, size=10.5, bold=True, color=ACCENT)
 
     items = [("电话", user.phone), ("邮箱", user.email), ("城市", user.location)]
     items = [(k, v) for k, v in items if v]
@@ -464,7 +520,7 @@ def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir
         _heading(doc, "个人简介")
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
-        _add_rich_runs(p, personal_summary, size=10)
+        _add_rich_runs(p, personal_summary, size=9.5)
 
     # 教育背景
     if enabled("education") and user.educations:
@@ -567,9 +623,9 @@ def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir
         _heading(doc, "自我评价")
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
-        _add_rich_runs(p, self_evaluation, size=10)
+        _add_rich_runs(p, self_evaluation, size=9.5)
 
-    return _save_docx(doc, user, out_dir)
+    return _save_docx(doc, user, out_dir, target_position)
 
 
 def _cell_shading(cell, color):
@@ -602,10 +658,10 @@ def _no_table_borders(table):
 
 def _side_heading(container, text):
     p = _add_para(container)
-    p.paragraph_format.space_before = Pt(10)
-    p.paragraph_format.space_after = Pt(4)
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(3)
     r = p.add_run(text)
-    _set_run(r, size=11, bold=True, color=PRIMARY)
+    _set_run(r, size=10.5, bold=True, color=PRIMARY)
     _border(p, color="B7C9E2", sz="6", side="bottom", space="2")
     return p
 
@@ -646,11 +702,14 @@ def _skill_groups(user, skills_curated):
 
 def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                   target_position: str = "", sections=None, fabricated=None,
-                  skills_curated=None, expected_salary: str = "", include_salary: bool = True) -> str:
+                  skills_curated=None, expected_salary: str = "", include_salary: bool = True,
+                  length: str = "fresh", custom_pages: int = None) -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
-    projects, internships, works, others = _merge_sections(user, fabricated)
+    budget = get_length_budget(length, custom_pages)
+    projects, internships, works, others = _merge_sections(
+        user, fabricated, limit=budget["max_experiences"])
 
     doc = _new_doc()
     # 双栏：左列侧边栏，右列主栏，隐藏边框
@@ -669,7 +728,7 @@ def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: 
     p.paragraph_format.space_before = Pt(2)
     p.paragraph_format.space_after = Pt(2)
     r = p.add_run(user.name or "姓名")
-    _set_run(r, size=16, bold=True, color=PRIMARY)
+    _set_run(r, size=15, bold=True, color=PRIMARY)
     p = _add_para(left)
     p.paragraph_format.space_after = Pt(6)
     r = p.add_run(pos)
@@ -713,7 +772,7 @@ def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: 
         _heading(right, "个人简介")
         p = _add_para(right)
         p.paragraph_format.space_after = Pt(2)
-        _add_rich_runs(p, personal_summary, size=10)
+        _add_rich_runs(p, personal_summary, size=9.5)
 
     if enabled("education") and user.educations:
         _heading(right, "教育背景")
@@ -781,9 +840,9 @@ def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: 
         _heading(right, "自我评价")
         p = _add_para(right)
         p.paragraph_format.space_after = Pt(2)
-        _add_rich_runs(p, self_evaluation, size=10)
+        _add_rich_runs(p, self_evaluation, size=9.5)
 
-    return _save_docx(doc, user, out_dir)
+    return _save_docx(doc, user, out_dir, target_position)
 
 
 # ---------- 模板库 ----------
@@ -792,23 +851,37 @@ def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: 
 #   (user, jd_summary, personal_summary, self_evaluation, out_dir,
 #    target_position, sections, fabricated, skills_curated,
 #    expected_salary, include_salary) -> str(输出文件路径)
+# kind 为 "vue" 时表示前端网页模板：前端通过 /resumes/{id}/render-context 取数渲染预览，
+# 不生成 docx（无 render），Word/PDF 下载在前端禁用。
 TEMPLATES = {
     "classic": {"label": "简洁单栏", "render": _render_classic},
     "split": {"label": "双栏", "render": _render_split},
+    "warm_vue": {"label": "暖阳卡片（网页版）", "kind": "vue"},
+    "navy_vue": {"label": "经典蓝人事（网页版）", "kind": "vue"},
 }
 
 # 独立模板文件夹（backend/app/services/templates/）中的模板在此登记；
 # 置于此处在末尾导入，避免与模板模块之间的循环依赖。
-from .templates import blue_classic, ios_engineer  # noqa: E402
+from .templates import blue_classic, docx_engineer, ios_engineer  # noqa: E402
 
 TEMPLATES.update(ios_engineer.TEMPLATE)
 TEMPLATES.update(blue_classic.TEMPLATE)
+TEMPLATES.update(docx_engineer.TEMPLATE)
 
 
 def available_templates():
     """返回可用模板列表，供前端渲染选择器与路由校验使用。"""
-    return [{"key": key, "label": spec["label"]} for key, spec in TEMPLATES.items()]
+    return [
+        {"key": key, "label": spec["label"], "kind": spec.get("kind", "docx")}
+        for key, spec in TEMPLATES.items()
+    ]
 
 
 def has_template(key: str) -> bool:
     return key in TEMPLATES
+
+
+def template_kind(key: str) -> str:
+    """模板类型：docx（后端生成 Word）或 vue（前端网页模板，仅在线预览/打印）。"""
+    spec = TEMPLATES.get(key)
+    return spec.get("kind", "docx") if spec else "docx"
