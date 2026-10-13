@@ -46,6 +46,12 @@
               <el-tag :type="statusType(row.status)">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="操作" width="140" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="row.status !== 'generated'" size="small" type="warning" @click.stop="$router.push(`/resume/${row.id}/edit`)">继续</el-button>
+              <el-button v-else size="small" @click.stop="$router.push(`/resume/${row.id}`)">查看</el-button>
+            </template>
+          </el-table-column>
           <el-table-column prop="updated_at" label="更新时间" width="180" />
         </el-table>
         <el-empty v-if="!loading && resumes.length === 0" description="暂无简历任务" :image-size="70" />

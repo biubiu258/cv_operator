@@ -10,6 +10,7 @@
         <el-menu-item index="/profiles"><el-icon><User /></el-icon>用户管理</el-menu-item>
         <el-menu-item index="/resume/new"><el-icon><EditPen /></el-icon>新建定向简历</el-menu-item>
         <el-menu-item index="/resumes"><el-icon><Files /></el-icon>简历任务</el-menu-item>
+        <el-menu-item index="/se-records"><el-icon><Collection /></el-icon>自我评价库</el-menu-item>
         <el-menu-item index="/llm"><el-icon><Setting /></el-icon>LLM 配置</el-menu-item>
       </el-menu>
     </el-aside>

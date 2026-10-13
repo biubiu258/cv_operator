@@ -14,6 +14,8 @@
               <el-form-item label="邮箱"><el-input v-model="basic.email" /></el-form-item>
               <el-form-item label="所在地"><el-input v-model="basic.location" /></el-form-item>
               <el-form-item label="意向岗位"><el-input v-model="basic.target_position" placeholder="如 AI Agent 开发工程师" /></el-form-item>
+              <el-form-item label="期望薪资"><el-input v-model="basic.expected_salary" placeholder="如：15K-20K 或 面议" /></el-form-item>
+              <el-form-item label="爱好"><el-input v-model="basic.hobbies" type="textarea" :rows="2" placeholder="如：跑步、摄影、开源参与、写作…（生成自我评价时可参考，非必填）" /></el-form-item>
               <el-form-item>
                 <el-button type="primary" @click="saveBasic" :loading="savingBasic">
                   {{ isEdit ? '保存基本信息' : '创建档案' }}
@@ -81,7 +83,7 @@ const router = useRouter()
 const userId = computed(() => (route.params.id ? Number(route.params.id) : null))
 const isEdit = computed(() => !!userId.value)
 
-const basic = reactive({ name: '', phone: '', email: '', location: '', target_position: '' })
+const basic = reactive({ name: '', phone: '', email: '', location: '', target_position: '', expected_salary: '', hobbies: '' })
 const data = reactive({ educations: [], skills: [], projects: [], internships: [], certificates: [] })
 const activeTab = ref('basic')
 const loading = ref(false)
@@ -151,7 +153,8 @@ async function load() {
     const u = await http.get(`/users/${userId.value}`)
     Object.assign(basic, {
       name: u.name, phone: u.phone, email: u.email,
-      location: u.location, target_position: u.target_position
+      location: u.location, target_position: u.target_position,
+      expected_salary: u.expected_salary || '', hobbies: u.hobbies || ''
     })
     ENTITIES.forEach((e) => { data[e.key] = u[e.key] || [] })
     created.value = true
