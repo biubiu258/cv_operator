@@ -8,6 +8,8 @@ def user_profile_dict(user) -> dict:
         "email": user.email,
         "location": user.location,
         "target_position": user.target_position,
+        "expected_salary": getattr(user, "expected_salary", ""),
+        "hobbies": getattr(user, "hobbies", ""),
         "educations": [
             {
                 "school": e.school, "major": e.major, "degree": e.degree,

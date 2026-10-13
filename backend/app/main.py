@@ -15,10 +15,35 @@ for _col, _ddl in (
     ("sections", "ALTER TABLE resumes ADD COLUMN sections JSON"),
     ("fabricated", "ALTER TABLE resumes ADD COLUMN fabricated JSON"),
     ("interview_prep", "ALTER TABLE resumes ADD COLUMN interview_prep JSON"),
+    ("se_questions", "ALTER TABLE resumes ADD COLUMN se_questions JSON"),
+    ("se_answers", "ALTER TABLE resumes ADD COLUMN se_answers JSON"),
+    ("skills_curated", "ALTER TABLE resumes ADD COLUMN skills_curated JSON"),
+    ("progress", "ALTER TABLE resumes ADD COLUMN progress VARCHAR(200)"),
+    ("expected_salary", "ALTER TABLE resumes ADD COLUMN expected_salary VARCHAR(50)"),
+    ("include_salary", "ALTER TABLE resumes ADD COLUMN include_salary BOOLEAN"),
+    ("template", "ALTER TABLE resumes ADD COLUMN template VARCHAR(30)"),
 ):
     if _col not in _resume_cols:
         with engine.begin() as _conn:
             _conn.execute(text(_ddl))
+
+# 为已存在的 users 表补充新列
+_user_cols = {c["name"] for c in inspect(engine).get_columns("users")}
+if "hobbies" not in _user_cols:
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE users ADD COLUMN hobbies TEXT"))
+if "expected_salary" not in _user_cols:
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE users ADD COLUMN expected_salary VARCHAR(50)"))
+
+# 回填历史数据中的 NULL（旧行在 ALTER TABLE 加列后为 NULL，避免响应校验报 string_type 错误）
+with engine.begin() as _conn:
+    _conn.execute(text("UPDATE users SET hobbies = '' WHERE hobbies IS NULL"))
+    _conn.execute(text("UPDATE users SET expected_salary = '' WHERE expected_salary IS NULL"))
+    _conn.execute(text("UPDATE resumes SET progress = '' WHERE progress IS NULL"))
+    _conn.execute(text("UPDATE resumes SET expected_salary = '' WHERE expected_salary IS NULL"))
+    _conn.execute(text("UPDATE resumes SET include_salary = 1 WHERE include_salary IS NULL"))
+    _conn.execute(text("UPDATE resumes SET template = 'classic' WHERE template IS NULL"))
 
 app = FastAPI(title="AI 简历生成器", version="0.1.0")
 

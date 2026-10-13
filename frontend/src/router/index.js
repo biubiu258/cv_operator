@@ -14,6 +14,7 @@ const routes = [
       { path: 'resume/new', name: 'resume-new', component: () => import('@/views/ResumeNew.vue'), meta: { title: '新建定向简历' } },
       { path: 'resume/:id/edit', name: 'resume-edit', component: () => import('@/views/ResumeNew.vue'), meta: { title: '继续生成简历' } },
       { path: 'resume/:id', name: 'resume-detail', component: () => import('@/views/ResumeDetail.vue'), meta: { title: '简历详情' } },
+      { path: 'se-records', name: 'se-records', component: () => import('@/views/SelfEvalRecords.vue'), meta: { title: '自我评价库' } },
       { path: 'llm', name: 'llm', component: () => import('@/views/LlmConfig.vue'), meta: { title: 'LLM 配置' } }
     ]
   }

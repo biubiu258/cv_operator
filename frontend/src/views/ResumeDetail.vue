@@ -6,6 +6,18 @@
     <div class="card-panel" style="margin-bottom:16px">
       <div class="card-body">
         <el-space wrap>
+          <el-button v-if="resume && resume.status !== 'generated'" type="warning" @click="$router.push(`/resume/${resume.id}/edit`)">继续生成</el-button>
+
+          <template v-if="resume?.status === 'generated'">
+            <span class="text-muted">选择模板</span>
+            <el-radio-group v-model="template" size="small" @change="changeTemplate">
+              <el-radio-button v-for="t in templateList" :key="t.key" :label="t.key">{{ t.label }}</el-radio-button>
+            </el-radio-group>
+            <el-button :loading="rebuilding" @click="rebuild">
+              <el-icon><RefreshRight /></el-icon> 重新生成
+            </el-button>
+          </template>
+
           <el-button type="primary" :disabled="!resume?.output_path" @click="download('docx')">
             <el-icon><Download /></el-icon> 下载 Word
           </el-button>
@@ -42,7 +54,12 @@
     </el-row>
 
     <div class="card-panel" style="margin-top:16px">
-      <div class="card-head">自我评价</div>
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+        <span>自我评价</span>
+        <el-button v-if="resume?.self_evaluation" size="small" type="primary" plain @click="saveToHistory">
+          <el-icon><Star /></el-icon> 保存到历史记录
+        </el-button>
+      </div>
       <div class="card-body" style="white-space:pre-wrap">{{ resume?.self_evaluation || '尚未生成' }}</div>
     </div>
 
@@ -88,10 +105,43 @@ import http, { downloadUrl } from '@/api'
 const route = useRoute()
 const resume = ref(null)
 const converting = ref(false)
+const rebuilding = ref(false)
+const template = ref('classic')
+const templateList = ref([])
 
 onMounted(async () => {
   resume.value = await http.get(`/resumes/${route.params.id}`)
+  template.value = resume.value.template || 'classic'
+  templateList.value = await http.get('/resumes/templates')
 })
+
+async function changeTemplate(val) {
+  if (!resume.value?.id) return
+  rebuilding.value = true
+  try {
+    await http.post(`/resumes/${resume.value.id}/rebuild`, { template: val })
+    resume.value.template = val
+    ElMessage.success('已切换模板')
+  } catch (e) {
+    template.value = resume.value.template || 'classic'
+    ElMessage.error(e.message || '切换模板失败')
+  } finally {
+    rebuilding.value = false
+  }
+}
+
+async function rebuild() {
+  if (!resume.value?.id) return
+  rebuilding.value = true
+  try {
+    await http.post(`/resumes/${resume.value.id}/rebuild`, {})
+    ElMessage.success('已重新生成')
+  } catch (e) {
+    ElMessage.error(e.message || '重新生成失败')
+  } finally {
+    rebuilding.value = false
+  }
+}
 
 function download(format) {
   window.open(downloadUrl(route.params.id, format), '_blank')
@@ -106,6 +156,18 @@ async function toPdf() {
     ElMessage.error(e.message)
   } finally {
     converting.value = false
+  }
+}
+
+async function saveToHistory() {
+  try {
+    await http.post('/self-evaluation/records', {
+      content: resume.value.self_evaluation,
+      resume_id: resume.value.id
+    })
+    ElMessage.success('已保存到自我评价历史记录')
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
   }
 }
 </script>
