@@ -15,6 +15,22 @@
               <el-form-item label="所在地"><el-input v-model="basic.location" /></el-form-item>
               <el-form-item label="意向岗位"><el-input v-model="basic.target_position" placeholder="如 AI Agent 开发工程师" /></el-form-item>
               <el-form-item label="期望薪资"><el-input v-model="basic.expected_salary" placeholder="如：15K-20K 或 面议" /></el-form-item>
+              <el-form-item label="毕业日期"><el-input v-model="basic.graduation_date" placeholder="如：2026.07（杜撰经历时间线参考，非必填）" /></el-form-item>
+              <el-form-item label="个人头像">
+                <div class="avatar-edit">
+                  <img v-if="basic.avatar" class="avatar-preview" :src="fileUrl(basic.avatar)" alt="头像" />
+                  <div v-else class="avatar-preview avatar-empty">无</div>
+                  <template v-if="isEdit">
+                    <el-upload :show-file-list="false" :http-request="doUploadAvatar" accept="image/*">
+                      <el-button size="small" type="primary" plain :loading="uploadingAvatar">
+                        {{ basic.avatar ? '更换头像' : '上传头像' }}
+                      </el-button>
+                    </el-upload>
+                    <el-button v-if="basic.avatar" size="small" text type="danger" @click="removeAvatar">移除</el-button>
+                  </template>
+                  <span v-else class="text-muted" style="font-size:12px">创建档案后可上传头像</span>
+                </div>
+              </el-form-item>
               <el-form-item label="爱好"><el-input v-model="basic.hobbies" type="textarea" :rows="2" placeholder="如：跑步、摄影、开源参与、写作…（生成自我评价时可参考，非必填）" /></el-form-item>
               <el-form-item>
                 <el-button type="primary" @click="saveBasic" :loading="savingBasic">
@@ -75,7 +91,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http from '@/api'
+import http, { fileUrl } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -83,12 +99,39 @@ const router = useRouter()
 const userId = computed(() => (route.params.id ? Number(route.params.id) : null))
 const isEdit = computed(() => !!userId.value)
 
-const basic = reactive({ name: '', phone: '', email: '', location: '', target_position: '', expected_salary: '', hobbies: '' })
+const basic = reactive({ name: '', phone: '', email: '', location: '', target_position: '', expected_salary: '', graduation_date: '', avatar: '', hobbies: '' })
 const data = reactive({ educations: [], skills: [], projects: [], internships: [], certificates: [] })
 const activeTab = ref('basic')
 const loading = ref(false)
 const savingBasic = ref(false)
 const created = ref(false)
+const uploadingAvatar = ref(false)
+
+// 头像上传/移除：走独立接口，保存文件到后端 uploads/avatars
+async function doUploadAvatar({ file }) {
+  uploadingAvatar.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await http.post(`/users/${userId.value}/avatar`, fd)
+    basic.avatar = res.avatar || ''
+    ElMessage.success('头像已上传')
+  } catch (e) {
+    ElMessage.error(e.message || '头像上传失败')
+  } finally {
+    uploadingAvatar.value = false
+  }
+}
+
+async function removeAvatar() {
+  try {
+    const res = await http.delete(`/users/${userId.value}/avatar`)
+    basic.avatar = res.avatar || ''
+    ElMessage.success('头像已移除')
+  } catch (e) {
+    ElMessage.error(e.message || '移除失败')
+  }
+}
 
 const PROFICIENCY_OPTIONS = ['熟练', '熟悉', '掌握', '了解', '其他']
 
@@ -154,7 +197,8 @@ async function load() {
     Object.assign(basic, {
       name: u.name, phone: u.phone, email: u.email,
       location: u.location, target_position: u.target_position,
-      expected_salary: u.expected_salary || '', hobbies: u.hobbies || ''
+      expected_salary: u.expected_salary || '', graduation_date: u.graduation_date || '',
+      avatar: u.avatar || '', hobbies: u.hobbies || ''
     })
     ENTITIES.forEach((e) => { data[e.key] = u[e.key] || [] })
     created.value = true
@@ -234,3 +278,16 @@ async function del(entity, row) {
   await load()
 }
 </script>
+
+<style scoped>
+.avatar-edit { display: flex; align-items: center; gap: 10px; }
+.avatar-preview {
+  width: 64px; height: 64px;
+  object-fit: cover; border-radius: 6px;
+  border: 1px solid #dcdfe6; background: #f5f7fa;
+}
+.avatar-empty {
+  display: grid; place-items: center;
+  color: #a8abb2; font-size: 13px;
+}
+</style>

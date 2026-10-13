@@ -86,6 +86,8 @@ class UserCreate(BaseModel):
     location: str = ""
     target_position: str = ""
     expected_salary: str = ""
+    graduation_date: str = ""
+    avatar: str = ""
     hobbies: str = ""
 
 
@@ -96,6 +98,8 @@ class UserUpdate(BaseModel):
     location: Optional[str] = None
     target_position: Optional[str] = None
     expected_salary: Optional[str] = None
+    graduation_date: Optional[str] = None
+    avatar: Optional[str] = None
     hobbies: Optional[str] = None
 
 
@@ -107,6 +111,8 @@ class UserOut(BaseModel):
     location: str
     target_position: str
     expected_salary: str = ""
+    graduation_date: str = ""
+    avatar: str = ""
     hobbies: str = ""
     is_active: bool
     created_at: Optional[datetime] = None
@@ -114,7 +120,7 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @field_validator("name", "phone", "email", "location", "target_position",
-                     "expected_salary", "hobbies", mode="before")
+                     "expected_salary", "graduation_date", "avatar", "hobbies", mode="before")
     @classmethod
     def _coerce_str(cls, v):
         return v if isinstance(v, str) else ""
@@ -154,10 +160,39 @@ class ResumeCreate(BaseModel):
     include_salary: bool = True
     sections: List[str] = []
     template: str = "classic"
+    length: str = "fresh"
+    custom_pages: Optional[int] = None
 
 
 class RebuildIn(BaseModel):
     template: str = ""
+
+
+class ResumeUpdateIn(BaseModel):
+    """详情页可编辑字段：个人简介、自我评价、包含模块。均为可选，传什么改什么。"""
+    personal_summary: Optional[str] = None
+    self_evaluation: Optional[str] = None
+    sections: Optional[List[str]] = None
+
+
+class RollbackIn(BaseModel):
+    step: str  # jd | fabricate | questions | se
+
+
+class ProgressEventOut(BaseModel):
+    id: int
+    message: str = ""
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FabricateVersionOut(BaseModel):
+    id: int
+    version: int
+    feedback: str = ""
+    experiences: list = []
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FabricateIn(BaseModel):
@@ -223,6 +258,9 @@ class ResumeOut(BaseModel):
     include_salary: bool = True
     sections: list = []
     template: str
+    length: str = "fresh"
+    custom_pages: Optional[int] = None
+    output_paths: dict = {}
     status: str
     questions: list = []
     answers: list = []
@@ -239,7 +277,7 @@ class ResumeOut(BaseModel):
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
-    @field_validator("jd_summary", "interview_prep", mode="before")
+    @field_validator("jd_summary", "interview_prep", "output_paths", mode="before")
     @classmethod
     def _coerce_dict(cls, v):
         return v if isinstance(v, dict) else {}
@@ -253,7 +291,7 @@ class ResumeOut(BaseModel):
 
     @field_validator(
         "jd_text", "target_position", "expected_salary", "status", "personal_summary",
-        "self_evaluation", "output_path", "progress", "template", mode="before")
+        "self_evaluation", "output_path", "progress", "template", "length", mode="before")
     @classmethod
     def _coerce_str(cls, v):
         return v if isinstance(v, str) else ""
@@ -262,3 +300,10 @@ class ResumeOut(BaseModel):
     @classmethod
     def _coerce_bool(cls, v):
         return v if isinstance(v, bool) else (bool(v) if v is not None else True)
+
+
+class ReviewOut(BaseModel):
+    """全流程回顾聚合：简历本体 + 进度消息记录 + 杜撰版本历史。"""
+    resume: ResumeOut
+    progress_events: List[ProgressEventOut] = []
+    fabricate_versions: List[FabricateVersionOut] = []

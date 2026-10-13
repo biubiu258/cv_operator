@@ -2,22 +2,7 @@
 import json
 
 from . import llm_client
-
-_SYSTEM = "你是一名资深简历优化专家，尤其擅长撰写针对具体岗位定制化的自我评价。"
-
-# 生成自我评价必须遵守的规范
-_NORMS = """必须严格遵守以下《自我评价规范》：
-1. 篇幅：3~5 句 / 100~180 字，控制在 5 行以内，不宜冗长。
-2. 结构四要素：定位（一句话"我是谁 + 目标岗位"）、技术栈速览（回扣 JD）、最有说服力的项目成果（可量化）、软素质（用具体事实支撑，而非空话）。
-3. 针对性强匹配：JD 高频关键词（技术栈 + 软素质 + 业务方向）至少命中 2~3 个，且每个关键词都要用具体事实支撑，而非单纯罗列。
-4. 真实性：只使用档案与问答中已确认的真实信息，不虚构绩点/排名/获奖/项目数据；无法背书的表述降级为定性描述。
-5. 量化：可量化成果必须带数字（准确率、响应时间、提升百分比、日均处理量等）；无数据时用"数量级 + 成果类型"的定性表述。
-6. 语气：第一人称，自信、客观、克制；不用"我认为/我觉得"，直接陈述事实；不用绝对化词（精通/最/极致），用分级词（熟练/扎实/熟悉）。
-7. 反套话：禁用"工作认真负责""吃苦耐劳""团队合作精神强""热爱学习"等无事实支撑表述；抽象词必须替换为具体行为/结果。
-8. 末尾一句表达与岗位的匹配或求职动机，短而自然，不煽情。
-9. 一致性：与技术栏、项目栏信息一致，不矛盾，时间线与技术名词准确。
-10. 语言：中文书面语，技术名词保留英文原词。
-11. 重点高亮：关键量化成果与 JD 核心关键词用 ** 包裹（如 **响应时间缩短 40%**、**RAG**），用于加粗高亮；除此之外不要使用其他 markdown 语法。"""
+from .prompting import render_prompt
 
 
 async def generate_questions(
@@ -27,19 +12,14 @@ async def generate_questions(
     api_key: str,
     model: str,
 ) -> list:
-    prompt = (
-        "你需要为求职者设计一组用于撰写「自我评价」的问题，目的是挖掘真实素材、"
-        "确定评价侧重方向、确认与 JD 的能力匹配项。\n"
-        "要求：共 3~5 题，题型混合（单选 choice / 多选 multi / 描述 text）。\n"
-        "只返回 JSON 数组（不要 markdown 代码块、不要额外文字），每项结构：\n"
-        '{"id":"q1","type":"choice|multi|text","question":"问题内容","options":["选项A","选项B"],"required":true}\n'
-        "其中 text 题型的 options 为空数组 []。\n\n"
-        f"岗位 JD 解析结果：{json.dumps(jd_summary, ensure_ascii=False)}\n"
-        f"求职者档案：{json.dumps(user_profile, ensure_ascii=False)}"
+    system, prompt = render_prompt(
+        "self_eval_questions",
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        user_profile=json.dumps(user_profile, ensure_ascii=False),
     )
     raw = await llm_client.chat(
         base_url, api_key, model,
-        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.4, json_mode=True,
     )
 
@@ -98,19 +78,15 @@ async def generate_self_evaluation(
     api_key: str,
     model: str,
 ) -> str:
-    prompt = (
-        "请为求职者撰写一段定制化「自我评价」。\n\n"
-        f"岗位 JD 解析结果：{json.dumps(jd_summary, ensure_ascii=False)}\n\n"
-        f"求职者档案：{json.dumps(user_profile, ensure_ascii=False)}\n\n"
-        f"用户对问题的回答：{json.dumps(answers, ensure_ascii=False)}\n\n"
-        f"用户自由补充：{supplement or '（无）'}\n\n"
-        "补充：档案中的「hobbies（爱好）」若与岗位相关或能体现个人特质，可自然提及一句；"
-        "若无关或无法自然融入，则不必强行结合。\n\n"
-        + _NORMS +
-        "\n\n只输出自我评价正文本身，不要标题、不要引号、不要多余说明。"
+    system, prompt = render_prompt(
+        "self_eval_generate",
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        user_profile=json.dumps(user_profile, ensure_ascii=False),
+        answers=json.dumps(answers, ensure_ascii=False),
+        supplement=supplement or "（无）",
     )
     return await llm_client.chat(
         base_url, api_key, model,
-        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.6,
     )

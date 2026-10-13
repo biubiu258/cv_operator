@@ -19,6 +19,8 @@ class User(Base):
     location = Column(String(100), default="")
     target_position = Column(String(100), default="")
     expected_salary = Column(String(50), default="")
+    graduation_date = Column(String(30), default="")  # 毕业日期，如 2026.07，供杜撰经历时间线参考
+    avatar = Column(String(300), default="")  # 头像图片相对路径（/static/avatars/...）或外链
     hobbies = Column(Text, default="")
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
@@ -116,6 +118,9 @@ class Resume(Base):
     expected_salary = Column(String(50), default="")
     include_salary = Column(Boolean, default=True)
     template = Column(String(30), default="classic")
+    length = Column(String(20), default="fresh")
+    custom_pages = Column(Integer, nullable=True)
+    output_paths = Column(JSON, default=dict)
     sections = Column(JSON, default=list)
     status = Column(String(20), default="draft")
     questions = Column(JSON, default=list)
@@ -133,6 +138,28 @@ class Resume(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     user = relationship("User", back_populates="resumes")
+
+
+class ProgressEvent(Base):
+    """简历生成过程中的进度消息记录（供全流程回顾展示）。"""
+    __tablename__ = "progress_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    resume_id = Column(Integer, ForeignKey("resumes.id"), index=True)
+    message = Column(String(300), default="")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class FabricateVersion(Base):
+    """杜撰经历的版本历史：初稿及每次按意见修改后的快照。"""
+    __tablename__ = "fabricate_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    resume_id = Column(Integer, ForeignKey("resumes.id"), index=True)
+    version = Column(Integer, default=1)
+    feedback = Column(Text, default="")  # 产生该版本的修改意见（初稿为空）
+    experiences = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class SelfEvaluation(Base):
