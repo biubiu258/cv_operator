@@ -54,7 +54,8 @@ async def generate(
     content = await se_svc.generate_self_evaluation(
         jd_summary, profile_svc.user_profile_dict(user),
         [a.model_dump() for a in data.answers], data.supplement,
-        ctx["base_url"], ctx["api_key"], ctx["model"])
+        ctx["base_url"], ctx["api_key"], ctx["model"],
+        previous=data.previous)
 
     rec = models.SelfEvaluation(
         user_id=user.id,

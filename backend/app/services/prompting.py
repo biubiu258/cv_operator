@@ -40,18 +40,30 @@ def render_prompt(name: str, **kwargs) -> tuple[str, str]:
 LENGTH_PRESETS = {
     "fresh": {"pages": 1, "summary_max": 2, "max_skills": 8,
               "max_experiences": 2, "fabricate_max": 2,
+              "strategy": "time_priority",
               "label": "应届（目标一页）"},
     "junior": {"pages": 2, "summary_max": 3, "max_skills": 10,
                "max_experiences": 4, "fabricate_max": 3,
+               "strategy": "time_priority",
                "label": "1-5年（2页以内）"},
     "senior": {"pages": 3, "summary_max": 3, "max_skills": 14,
                "max_experiences": 6, "fabricate_max": 5,
+               "strategy": "time_priority",
                "label": "5年及以上（3页以内）"},
 }
 
+VALID_STRATEGIES = ("time_priority", "keyword_priority", "manual")
 
-def get_length_budget(length: str = "fresh", custom_pages=None) -> dict:
-    """根据篇幅选项返回内容预算字典。custom 时按自定义页数就近取档。"""
+
+def get_length_budget(length: str = "fresh", custom_pages=None,
+                      strategy: str = "time_priority") -> dict:
+    """根据篇幅选项返回内容预算字典。
+
+    strategy 决定经历裁剪策略，会被写入 budget 并在 render 时透传到 compressor：
+      - time_priority      按结束时间倒序（默认，应届/社招通用）
+      - keyword_priority   跨 type 按 JD 关键词匹配度排序（定向投递首选）
+      - manual             尊重数组原序（用户显式排过序的场景）
+    """
     if length == "custom":
         try:
             pages = max(1, int(custom_pages or 2))
@@ -61,8 +73,27 @@ def get_length_budget(length: str = "fresh", custom_pages=None) -> dict:
         budget = dict(LENGTH_PRESETS[key])
         budget["pages"] = pages
         budget["label"] = f"自定义（{pages}页）"
-        return budget
-    return dict(LENGTH_PRESETS.get(length, LENGTH_PRESETS["fresh"]))
+    else:
+        budget = dict(LENGTH_PRESETS.get(length, LENGTH_PRESETS["fresh"]))
+    if strategy in VALID_STRATEGIES:
+        budget["strategy"] = strategy
+    return budget
+
+
+def set_budget_strategy(budget: dict, strategy: str) -> dict:
+    """给已有的 budget dict 注入（覆盖）裁剪策略——render 入口统一用这个，不用重新 get_length_budget。"""
+    if strategy in VALID_STRATEGIES:
+        budget["strategy"] = strategy
+    return budget
+
+
+def available_strategies() -> list:
+    """返回裁剪策略列表，供前端渲染选择器。"""
+    return [
+        {"key": "time_priority", "label": "时间优先（默认，按结束时间倒序）"},
+        {"key": "keyword_priority", "label": "关键词优先（按 JD 匹配度跨 type 排序）"},
+        {"key": "manual", "label": "手动排序（尊重数组原序）"},
+    ]
 
 
 def available_lengths() -> list:

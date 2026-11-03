@@ -22,7 +22,7 @@ from ..resume_generator import (
     _skill_row,
     _tech_line,
 )
-from ..prompting import get_length_budget
+from ..prompting import get_length_budget, set_budget_strategy
 
 # 版式主色：金色（源自源模板 #AA894A），正文深灰 #454545
 GOLD = RGBColor(0xAA, 0x89, 0x4A)
@@ -62,13 +62,18 @@ def _gold_entry(container, left, right, tab_cm=17.3):
 def render(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
            target_position="", sections=None, fabricated=None,
            skills_curated=None, expected_salary="", include_salary=True,
-           length="fresh", custom_pages=None, polished_experiences=None) -> str:
+           length="fresh", custom_pages=None, polished_experiences=None,
+           polished_selection=None, manual_order=None,
+           truncate_strategy="time_priority") -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
+    set_budget_strategy(budget, truncate_strategy)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences)
+        user, fabricated, polished=polished_experiences,
+        manual_order=manual_order, polished_selection=polished_selection,
+        budget=budget, jd_summary=jd_summary)
     doc = _new_doc()
 
     # ===== 头部 =====
