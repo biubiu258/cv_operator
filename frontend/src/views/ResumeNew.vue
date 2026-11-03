@@ -54,6 +54,20 @@
             <el-input-number v-model="customPages" :min="1" :max="10" />
           </div>
 
+          <div style="margin-top:10px">
+            <span class="text-muted" style="font-size:12px">裁剪策略：</span>
+            <el-radio-group v-model="truncateStrategy" size="small">
+              <el-radio-button value="time_priority">时间优先</el-radio-button>
+              <el-radio-button value="keyword_priority">关键词优先</el-radio-button>
+              <el-radio-button value="manual">手动排序</el-radio-button>
+            </el-radio-group>
+            <div class="text-muted" style="font-size:12px;margin-top:4px">
+              时间优先：按结束时间倒序，各 type 独立配额；
+              关键词优先：所有经历跨 type 按 JD 匹配度统一排名，定向投递首选；
+              手动排序：尊重数组原序（润色/杜撰经历手动排过序时自动生效）
+            </div>
+          </div>
+
           <div style="margin-top:20px">
             <el-button type="primary" :loading="busy" @click="createTask">创建任务并解析</el-button>
           </div>
@@ -123,12 +137,29 @@
                   公司、岗位、时间、技术栈等事实保持不变，也不会新增或删除经历。
                 </template>
               </el-alert>
-              <div class="text-muted" style="font-size:13px">
-                档案中当前有
-                <b>{{ (profile.internships || []).length }}</b> 段实习经历、
-                <b>{{ (profile.projects || []).length }}</b> 段项目经历可润色。
+
+              <div style="font-weight:600;margin:16px 0 6px">选择要润色并写入简历的经历</div>
+              <div class="text-muted" style="font-size:12px;margin-bottom:10px">
+                档案中当前有 <b>{{ (profile.internships || []).length }}</b> 段实习经历、
+                <b>{{ (profile.projects || []).length }}</b> 段项目经历；已选
+                <b>{{ polishSelection.length }}</b> 段。未勾选的经历不会被 AI 润色，也不会出现在简历中。
+                <el-button size="small" text type="primary" @click="selectAllReal">全选</el-button>
+                <el-button size="small" text @click="polishSelection = []">全不选</el-button>
               </div>
-              <el-button v-if="!realCount" type="primary" disabled style="margin-top:16px">暂无可润色的经历</el-button>
+
+              <el-checkbox-group v-if="realOptions.length" v-model="polishSelection">
+                <div v-for="o in realOptions" :key="o.ref_id"
+                  style="border:1px solid #e6e8eb;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+                  <el-checkbox :label="o.ref_id" style="display:flex;align-items:flex-start">
+                    <b>{{ o.title }}</b>
+                    <span class="text-muted" style="font-size:12px;margin-left:8px">
+                      {{ TYPE_LABELS[o.type] }}<span v-if="o.role"> · {{ o.role }}</span>
+                      <span v-if="o.time"> · {{ o.time }}</span>
+                    </span>
+                  </el-checkbox>
+                </div>
+              </el-checkbox-group>
+              <el-empty v-else description="档案中暂无可润色的经历" :image-size="60" />
             </template>
 
             <template v-else>
@@ -140,7 +171,10 @@
             <div style="margin-top:20px">
               <el-button @click="step = 1">上一步</el-button>
               <el-button v-if="expMode === 'fabricate'" type="primary" :loading="busy" @click="generateFabricated">生成经历</el-button>
-              <el-button v-else-if="expMode === 'polish' && realCount" type="primary" :loading="busy" @click="startPolish">开始 AI 润色</el-button>
+              <el-button v-else-if="expMode === 'polish' && realCount" type="primary"
+                :loading="busy" :disabled="!polishSelection.length" @click="startPolish">
+                开始 AI 润色{{ polishSelection.length ? `（已选 ${polishSelection.length} 段）` : '' }}
+              </el-button>
               <el-button v-else type="primary" :loading="busy" @click="confirmAndContinue">继续（使用真实经历原文）</el-button>
             </div>
           </template>
@@ -148,7 +182,7 @@
           <template v-else>
             <div class="page-sub" style="margin-bottom:8px">
               <template v-if="expMode === 'polish'">
-                已润色 {{ editingExperiences.length }} 段真实经历，事实字段已锁定，可调整「核心工作 / 量化成果」，或让 AI 按意见继续修改。
+                已润色 {{ editingExperiences.length }} 段真实经历（仅这些经历会写入简历），事实字段已锁定，可调整「核心工作 / 量化成果」，或让 AI 按意见继续修改。
               </template>
               <template v-else>
                 已生成 {{ editingExperiences.length }} 段经历，可逐项修改，或在下方对 AI 提出整体修改意见。
@@ -224,44 +258,159 @@
           </template>
         </div>
 
-        <!-- 3 回答必要问题 -->
+        <!-- 3 回答必要问题：一题一屏 + 答题摘要 -->
         <div v-else-if="step === 3">
-          <div v-for="q in questions" :key="q.id" style="margin-bottom:20px">
-            <div style="font-weight:600;margin-bottom:10px">{{ q.question }}</div>
-            <el-radio-group v-if="q.type === 'choice'" v-model="ans[q.id]">
-              <el-radio v-for="o in q.options" :key="o" :label="o">{{ o }}</el-radio>
-            </el-radio-group>
-            <el-checkbox-group v-else-if="q.type === 'multi'" v-model="ans[q.id]">
-              <el-checkbox v-for="o in q.options" :key="o" :label="o">{{ o }}</el-checkbox>
-            </el-checkbox-group>
-            <el-input v-else v-model="ans[q.id]" type="textarea" :rows="2" />
+          <div class="qa-progress">
+            <div style="font-weight:600">
+              必要问答 · 第 {{ Math.min(qIndex + 1, questions.length || 1) }} / {{ questions.length }} 题
+            </div>
+            <el-progress :percentage="qProgress" :show-text="false" style="flex:1;margin:0 12px" />
+            <el-button size="small" text type="primary" :loading="busy"
+              @click="regenerateQuestions">重新出题</el-button>
           </div>
-          <div style="margin-top:16px">
-            <el-button @click="step = 2">上一步</el-button>
-            <el-button type="primary" :loading="busy" @click="submitAnswers">下一步：自我评价</el-button>
-          </div>
+
+          <template v-if="questionPhase === 'answer' && currentQuestion">
+            <div class="qa-card">
+              <div class="qa-meta">
+                <el-tag v-if="currentQuestion.topic" size="small">{{ currentQuestion.topic }}</el-tag>
+                <el-tag size="small" effect="plain" :type="currentQuestion.required ? 'danger' : 'info'">
+                  {{ currentQuestion.required ? '必答' : '可跳过' }}
+                </el-tag>
+                <el-button size="small" text type="primary" :loading="busy"
+                  @click="regenerateOne">换一题</el-button>
+              </div>
+              <div class="qa-question">{{ currentQuestion.question }}</div>
+              <div v-if="currentQuestion.why" class="qa-why">为什么要问：{{ currentQuestion.why }}</div>
+
+              <div class="qa-input">
+                <el-radio-group v-if="currentQuestion.type === 'choice'" v-model="ans[currentQuestion.id]"
+                  @change="scheduleSaveAnswers">
+                  <el-radio v-for="o in currentQuestion.options" :key="o" :label="o">{{ o }}</el-radio>
+                </el-radio-group>
+                <el-checkbox-group v-else-if="currentQuestion.type === 'multi'" v-model="ans[currentQuestion.id]"
+                  @change="scheduleSaveAnswers">
+                  <el-checkbox v-for="o in currentQuestion.options" :key="o" :label="o">{{ o }}</el-checkbox>
+                </el-checkbox-group>
+                <el-input v-else v-model="ans[currentQuestion.id]" type="textarea" :rows="4"
+                  :placeholder="currentQuestion.hint || '尽量写具体事实与数字，会显著提升简历质量'"
+                  @blur="scheduleSaveAnswers" />
+              </div>
+
+              <div class="qa-actions">
+                <el-button :disabled="qIndex === 0" @click="prevQuestion">上一题</el-button>
+                <el-button v-if="!currentQuestion.required" @click="skipQuestion">跳过这题</el-button>
+                <el-button v-if="qIndex < questions.length - 1" type="primary" @click="nextQuestion">
+                  下一题
+                </el-button>
+                <el-button v-else type="primary" @click="showQuestionSummary">
+                  查看答题摘要
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="qa-card">
+              <div style="font-weight:600;margin-bottom:8px">答题摘要</div>
+              <div class="text-muted" style="font-size:13px;margin-bottom:12px">
+                已答 <b>{{ answeredQuestionCount }}</b> / {{ questions.length }} 题
+                <el-tag v-if="missingRequiredCount" type="danger" size="small" style="margin-left:8px">
+                  还有 {{ missingRequiredCount }} 道必答题未填写
+                </el-tag>
+                <el-tag v-else type="success" size="small" style="margin-left:8px">必答题已齐全</el-tag>
+              </div>
+              <div v-for="(q, i) in questions" :key="q.id" class="qa-sum-item">
+                <div class="qa-sum-head">
+                  <b>{{ i + 1 }}. {{ q.question }}</b>
+                  <el-button size="small" text type="primary" @click="editQuestion(i)">修改</el-button>
+                </div>
+                <div class="qa-sum-answer" :class="{ empty: !answerText(q) }">
+                  {{ answerText(q) || '（未填写）' }}
+                </div>
+              </div>
+              <div class="qa-actions">
+                <el-button @click="questionPhase = 'answer'">返回继续作答</el-button>
+                <el-button type="primary" :loading="busy" @click="submitAnswers">下一步：自我评价</el-button>
+              </div>
+            </div>
+          </template>
         </div>
 
-        <!-- 4 自我评价问答 -->
+        <!-- 4 自我评价问答：一题一屏 + 生成预览 -->
         <div v-else-if="step === 4">
-          <div class="page-sub">回答几个问题，AI 依岗位 JD 与你的情况生成定制化自我评价（置于简历最下方）</div>
-          <div v-for="q in seQuestions" :key="q.id" style="margin-bottom:20px">
-            <div style="font-weight:600;margin-bottom:10px">
-              {{ q.question }} <span v-if="!q.required" class="text-muted">（可留空）</span>
+          <div class="qa-progress">
+            <div style="font-weight:600">
+              自我评价 · {{ sePhase === 'preview' ? '生成预览' : `第 ${Math.min(seIndex + 1, seQuestions.length || 1)} / ${seQuestions.length} 题` }}
             </div>
-            <el-radio-group v-if="q.type === 'choice'" v-model="seAns[q.id]">
-              <el-radio v-for="o in q.options" :key="o" :label="o">{{ o }}</el-radio>
-            </el-radio-group>
-            <el-checkbox-group v-else-if="q.type === 'multi'" v-model="seAns[q.id]">
-              <el-checkbox v-for="o in q.options" :key="o" :label="o">{{ o }}</el-checkbox>
-            </el-checkbox-group>
-            <el-input v-else v-model="seAns[q.id]" type="textarea" :rows="2" :placeholder="q.id === 'supplement' ? '可留空' : ''" />
+            <el-progress :percentage="seProgress" :show-text="false" style="flex:1;margin:0 12px" />
+            <span class="text-muted" style="font-size:12px">答案会自动保存</span>
           </div>
-          <div style="margin-top:16px">
-            <el-button @click="goBackFromSe">上一步</el-button>
-            <el-button :loading="busy" @click="saveSeDraft">保存答案</el-button>
-            <el-button type="primary" :loading="busy" @click="submitAndGenerate">生成自我评价并生成简历</el-button>
-          </div>
+
+          <template v-if="sePhase === 'answer' && currentSeQuestion">
+            <div class="qa-card">
+              <div class="qa-meta">
+                <el-tag v-if="currentSeQuestion.topic" size="small">{{ currentSeQuestion.topic }}</el-tag>
+                <el-tag size="small" effect="plain" :type="currentSeQuestion.required ? 'danger' : 'info'">
+                  {{ currentSeQuestion.required ? '必答' : '可留空' }}
+                </el-tag>
+              </div>
+              <div class="qa-question">{{ currentSeQuestion.question }}</div>
+              <div v-if="currentSeQuestion.why" class="qa-why">为什么要问：{{ currentSeQuestion.why }}</div>
+
+              <div class="qa-input">
+                <el-radio-group v-if="currentSeQuestion.type === 'choice'" v-model="seAns[currentSeQuestion.id]"
+                  @change="scheduleSaveSeAnswers">
+                  <el-radio v-for="o in currentSeQuestion.options" :key="o" :label="o">{{ o }}</el-radio>
+                </el-radio-group>
+                <el-checkbox-group v-else-if="currentSeQuestion.type === 'multi'" v-model="seAns[currentSeQuestion.id]"
+                  @change="scheduleSaveSeAnswers">
+                  <el-checkbox v-for="o in currentSeQuestion.options" :key="o" :label="o">{{ o }}</el-checkbox>
+                </el-checkbox-group>
+                <el-input v-else v-model="seAns[currentSeQuestion.id]" type="textarea" :rows="4"
+                  :placeholder="currentSeQuestion.hint || (currentSeQuestion.required ? '' : '可留空')"
+                  @blur="scheduleSaveSeAnswers" />
+              </div>
+
+              <div class="qa-actions">
+                <el-button :disabled="seIndex === 0" @click="prevSeQuestion">上一题</el-button>
+                <el-button v-if="!currentSeQuestion.required" @click="skipSeQuestion">跳过这题</el-button>
+                <el-button v-if="seIndex < seQuestions.length - 1" type="primary" @click="nextSeQuestion">
+                  下一题
+                </el-button>
+                <el-button v-else type="primary" :loading="busy" @click="generateSePreview">
+                  生成自我评价
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <div class="qa-card">
+              <div class="se-preview" v-html="highlightSeText(sePreview)" />
+              <div class="se-metrics">
+                <el-tag size="small" :type="seMetrics.lengthOk ? 'success' : 'warning'">
+                  字数 {{ seMetrics.length }}（建议 100~180）
+                </el-tag>
+                <el-tag size="small" :type="seMetrics.hitRate >= 60 ? 'success' : 'warning'">
+                  JD 关键词命中 {{ seMetrics.hits }} / {{ seMetrics.total }}（{{ seMetrics.hitRate }}%）
+                </el-tag>
+                <el-tag v-if="seMetrics.cliches.length" size="small" type="danger">
+                  套话 {{ seMetrics.cliches.length }} 处：{{ seMetrics.cliches.join('、') }}
+                </el-tag>
+                <el-tag v-else size="small" type="success">未发现常见套话</el-tag>
+              </div>
+              <div v-if="seMetrics.missed.length" class="text-muted" style="font-size:12px;margin-top:8px">
+                尚未体现的 JD 关键词：{{ seMetrics.missed.join('、') }}；可在「返回修改答案」中补充事实后再生成。
+              </div>
+              <div class="qa-actions">
+                <el-button @click="sePhase = 'answer'">返回修改答案</el-button>
+                <el-button :loading="busy" @click="generateSePreview">换一版</el-button>
+                <el-button type="primary" :loading="busy" @click="confirmSeAndBuild">
+                  确认并生成简历
+                </el-button>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- 5 生成中 -->
@@ -276,12 +425,19 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http, { WS_BASE } from '@/api'
 
 const router = useRouter()
 const route = useRoute()
 const editId = computed(() => route.params.id)
+
+const TYPE_LABELS = {
+  project: '项目经历',
+  internship: '实习经历',
+  work: '全职经历',
+  other: '其他经历'
+}
 
 const MODULES = [
   { key: 'summary', label: '个人简介' },
@@ -306,6 +462,7 @@ const resumeId = ref(null)
 const jdSummary = ref({})
 const fabricated = ref([])
 const polished = ref([])
+const polishSelection = ref([]) // 勾选参与润色（并写入简历）的真实经历 ref_id
 const timelineWarnings = ref([])
 const profile = ref({})
 const fabMax = ref(5)
@@ -314,6 +471,11 @@ const questions = ref([])
 const ans = reactive({})
 const seQuestions = ref([])
 const seAns = reactive({})
+const qIndex = ref(0)            // 必要问答：当前题序号
+const questionPhase = ref('answer') // answer 逐题作答 | summary 答题摘要
+const seIndex = ref(0)           // 自我评价：当前题序号
+const sePhase = ref('answer')    // answer 逐题作答 | preview 生成预览
+const sePreview = ref('')        // 已生成的自我评价正文
 const busy = ref(false)
 const parsing = ref(false)
 const aiStatus = ref('')
@@ -324,12 +486,284 @@ const fabricatePhase = ref('config')
 const userFeedback = ref('')
 const length = ref('fresh')
 const customPages = ref(2)
+const truncateStrategy = ref('time_priority')
 
 // 复核阶段当前编辑的经历列表：润色模式用润色稿，其余用杜撰稿
 const editingExperiences = computed(() =>
   expMode.value === 'polish' ? polished.value : fabricated.value)
 const realCount = computed(() =>
   (profile.value.internships?.length || 0) + (profile.value.projects?.length || 0))
+
+// 档案中可勾选润色的真实经历（ref_id 与后端 collect_real_experiences 编号一致）
+const realOptions = computed(() => {
+  const out = []
+  ;(profile.value.internships || []).forEach((it, i) => out.push({
+    ref_id: `internship-${i}`,
+    type: 'internship',
+    title: it.company || '未命名实习',
+    role: it.position || '',
+    time: [it.start_date, it.end_date].filter(Boolean).join(' - ')
+  }))
+  ;(profile.value.projects || []).forEach((it, i) => out.push({
+    ref_id: `project-${i}`,
+    type: 'project',
+    title: it.title || '未命名项目',
+    role: it.role || '',
+    time: [it.start_date, it.end_date].filter(Boolean).join(' - ')
+  }))
+  return out
+})
+
+function selectAllReal() {
+  polishSelection.value = realOptions.value.map((o) => o.ref_id)
+}
+
+// ---------- 必要问答：一题一屏 ----------
+const currentQuestion = computed(() => questions.value[qIndex.value] || null)
+const qProgress = computed(() => {
+  if (!questions.value.length) return 0
+  return Math.round(((qIndex.value + (questionPhase.value === 'summary' ? 1 : 0)) / questions.value.length) * 100)
+})
+const answeredQuestionCount = computed(() =>
+  questions.value.filter((q) => answerText(q)).length)
+const missingRequiredCount = computed(() =>
+  questions.value.filter((q) => q.required && !answerText(q)).length)
+
+function answerText(q) {
+  if (!q) return ''
+  const v = ans[q.id]
+  return Array.isArray(v) ? v.filter(Boolean).join('、') : (v || '').trim()
+}
+
+function collectAnswers() {
+  return questions.value.map((q) => ({
+    id: q.id,
+    question: q.question,
+    answer: answerText(q)
+  }))
+}
+
+// 自动保存：输入后 800ms 落库，避免频繁请求
+let answersTimer = null
+function scheduleSaveAnswers() {
+  clearTimeout(answersTimer)
+  answersTimer = setTimeout(() => { saveAnswersDraft().catch(() => {}) }, 800)
+}
+
+async function saveAnswersDraft() {
+  if (!resumeId.value || !questions.value.length) return
+  await http.post(`/resumes/${resumeId.value}/answers`, {
+    answers: collectAnswers(),
+    draft: true
+  })
+}
+
+function prevQuestion() {
+  if (qIndex.value > 0) qIndex.value--
+}
+
+function nextQuestion() {
+  if (currentQuestion.value?.required && !answerText(currentQuestion.value)) {
+    ElMessage.warning('这是必答题，请先填写后再进入下一题（也可以点「换一题」换掉它）')
+    return
+  }
+  if (qIndex.value < questions.value.length - 1) {
+    qIndex.value++
+    scheduleSaveAnswers()
+  }
+}
+
+function skipQuestion() {
+  if (currentQuestion.value?.required) {
+    ElMessage.warning('必答题不能跳过，可填写或点「换一题」')
+    return
+  }
+  nextQuestion()
+}
+
+function showQuestionSummary() {
+  scheduleSaveAnswers()
+  questionPhase.value = 'summary'
+}
+
+function editQuestion(i) {
+  qIndex.value = i
+  questionPhase.value = 'answer'
+}
+
+async function regenerateQuestions() {
+  try {
+    await ElMessageBox.confirm(
+      '重新出题会替换当前全部问题，已填写的答案将清空。是否继续？',
+      '重新出题', { confirmButtonText: '重新出题', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  busy.value = true
+  startProgress()
+  try {
+    await genQuestions()
+    ElMessage.success('已重新生成必要问题')
+  } catch (e) {
+    ElMessage.error(e.message || '重新出题失败')
+  } finally {
+    stopProgress()
+    busy.value = false
+  }
+}
+
+async function regenerateOne() {
+  if (!currentQuestion.value) return
+  busy.value = true
+  startProgress()
+  try {
+    const q = currentQuestion.value
+    const r = await http.post(`/resumes/${resumeId.value}/questions/regenerate`, {
+      question_id: q.id,
+      topic: q.topic || ''
+    })
+    questions.value = r.questions || questions.value
+    ans[q.id] = (r.question?.type === 'multi') ? [] : ''
+    ElMessage.success('已换一题，原题答案已清除')
+  } catch (e) {
+    ElMessage.error(e.message || '换题失败，请稍后再试')
+  } finally {
+    stopProgress()
+    busy.value = false
+  }
+}
+
+// ---------- 自我评价：一题一屏 + 预览 ----------
+const currentSeQuestion = computed(() => seQuestions.value[seIndex.value] || null)
+const seProgress = computed(() => {
+  if (!seQuestions.value.length) return 0
+  if (sePhase.value === 'preview') return 100
+  return Math.round((seIndex.value / seQuestions.value.length) * 100)
+})
+
+function seAnswerText(q) {
+  if (!q) return ''
+  const v = seAns[q.id]
+  return Array.isArray(v) ? v.filter(Boolean).join('、') : (v || '').trim()
+}
+
+let seAnswersTimer = null
+function scheduleSaveSeAnswers() {
+  clearTimeout(seAnswersTimer)
+  seAnswersTimer = setTimeout(() => { saveSeAnswers().catch(() => {}) }, 800)
+}
+
+function prevSeQuestion() {
+  if (seIndex.value > 0) seIndex.value--
+}
+
+function nextSeQuestion() {
+  if (currentSeQuestion.value?.required && !seAnswerText(currentSeQuestion.value)) {
+    ElMessage.warning('这是必答题，请先填写后再进入下一题')
+    return
+  }
+  if (seIndex.value < seQuestions.value.length - 1) {
+    seIndex.value++
+    scheduleSaveSeAnswers()
+  }
+}
+
+function skipSeQuestion() {
+  if (currentSeQuestion.value?.required) {
+    ElMessage.warning('必答题不能跳过，请填写后再继续')
+    return
+  }
+  nextSeQuestion()
+}
+
+const SE_CLICHES = [
+  '工作认真负责', '吃苦耐劳', '团队合作精神', '热爱学习', '沟通能力强',
+  '学习能力强', '责任心强', '抗压能力强', '积极主动'
+]
+
+const seMetrics = computed(() => {
+  const text = (sePreview.value || '').replace(/\*\*/g, '')
+  const length = text.replace(/\s/g, '').length
+  const kws = [...new Set([
+    ...(jdSummary.value.tech || []),
+    ...(jdSummary.value.soft || []),
+    ...(jdSummary.value.domain || [])
+  ].map((k) => String(k || '').trim()).filter(Boolean))]
+  const lower = text.toLowerCase()
+  const hitList = kws.filter((k) => lower.includes(k.toLowerCase()))
+  const missed = kws.filter((k) => !lower.includes(k.toLowerCase()))
+  return {
+    length,
+    lengthOk: length >= 100 && length <= 180,
+    hits: hitList.length,
+    total: kws.length,
+    hitRate: kws.length ? Math.round((hitList.length * 100) / kws.length) : 100,
+    missed,
+    cliches: SE_CLICHES.filter((c) => text.includes(c))
+  }
+})
+
+function highlightSeText(text) {
+  const safe = (text || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>')
+}
+
+function supplementValue() {
+  return (seAns.supplement || '').trim()
+}
+
+async function generateSePreview() {
+  const missing = seQuestions.value.filter((q) => q.required && !seAnswerText(q))
+  if (missing.length) {
+    ElMessage.warning(`还有 ${missing.length} 道必答题未完成，请补全后再生成`)
+    return
+  }
+  busy.value = true
+  startProgress()
+  try {
+    await saveSeAnswers()
+    const r = await http.post('/self-evaluation/generate', {
+      resume_id: resumeId.value,
+      answers: collectSeAnswers().answers,
+      supplement: supplementValue(),
+      previous: sePreview.value
+    })
+    sePreview.value = r.content || ''
+    sePhase.value = 'preview'
+  } catch (e) {
+    ElMessage.error(e.message || '生成自我评价失败')
+  } finally {
+    stopProgress()
+    busy.value = false
+  }
+}
+
+async function confirmSeAndBuild() {
+  if (!sePreview.value) {
+    ElMessage.warning('请先生成自我评价预览')
+    return
+  }
+  busy.value = true
+  step.value = 5
+  startProgress()
+  try {
+    await http.post(`/resumes/${resumeId.value}/generate`)
+    ElMessage.success('简历已生成')
+    router.push(`/resume/${resumeId.value}`)
+  } catch (e) {
+    ElMessage.error(e.message || '生成简历失败')
+    step.value = 4
+  } finally {
+    stopProgress()
+    busy.value = false
+  }
+}
+
+// 恢复勾选：优先使用已保存的选择，无历史选择（旧任务）时默认全选
+function initPolishSelection(saved) {
+  const all = realOptions.value.map((o) => o.ref_id)
+  const keep = (saved || []).filter((r) => all.includes(r))
+  polishSelection.value = keep.length ? keep : all
+}
 
 async function loadBudget() {
   if (!resumeId.value) return
@@ -429,26 +863,13 @@ async function fetchSeQuestions() {
   seQuestions.value.forEach((q) => {
     seAns[q.id] = q.type === 'multi' ? [] : ''
   })
+  seIndex.value = 0
+  sePhase.value = 'answer'
+  sePreview.value = ''
 }
 
 async function saveSeAnswers() {
   await http.post(`/resumes/${resumeId.value}/se-answers`, collectSeAnswers())
-}
-
-async function saveSeDraft() {
-  try {
-    await saveSeAnswers()
-    ElMessage.success('答案已保存')
-  } catch (e) {
-    ElMessage.error(e.message || '保存失败')
-  }
-}
-
-async function goBackFromSe() {
-  try {
-    await saveSeAnswers()
-  } catch (e) { /* 保存失败也允许返回 */ }
-  step.value = 3
 }
 
 // 继续生成：从已有任务恢复全部中断状态
@@ -462,10 +883,12 @@ async function loadResume() {
   includeSalary.value = r.include_salary !== false
   length.value = r.length || 'fresh'
   customPages.value = r.custom_pages || 2
+  truncateStrategy.value = r.truncate_strategy || 'time_priority'
   sections.value = (r.sections && r.sections.length) ? r.sections : MODULES.map((m) => m.key)
   jdSummary.value = r.jd_summary || {}
   fabricated.value = r.fabricated || []
   polished.value = r.polished_experiences || []
+  initPolishSelection(r.polish_selection)
   timelineWarnings.value = r.timeline_warnings || []
   interviewPrep.value = r.interview_prep || {}
   questions.value = r.questions || []
@@ -510,10 +933,18 @@ async function loadResume() {
     } else {
       await fetchSeQuestions()
     }
+    seIndex.value = 0
+    // 已生成过自我评价预览（尚未确认生成简历）时，直接回到预览继续
+    if (r.self_evaluation && (r.se_answers || []).length) {
+      sePreview.value = r.self_evaluation
+      sePhase.value = 'preview'
+    }
     return
   }
   if (r.status === 'questioning') {
     step.value = 3
+    qIndex.value = 0
+    questionPhase.value = 'answer'
     return
   }
   if (r.status === 'parsed') {
@@ -530,7 +961,10 @@ async function loadResume() {
 
 onMounted(async () => {
   await loadProfile()
-  if (!editId.value) return
+  if (!editId.value) {
+    selectAllReal()
+    return
+  }
   busy.value = true
   try {
     await loadResume()
@@ -555,7 +989,8 @@ async function createTask() {
       include_salary: includeSalary.value,
       sections: sections.value,
       length: length.value,
-      custom_pages: length.value === 'custom' ? customPages.value : null
+      custom_pages: length.value === 'custom' ? customPages.value : null,
+      truncate_strategy: truncateStrategy.value
     })
     resumeId.value = r.id
     step.value = 1
@@ -586,6 +1021,8 @@ async function genQuestions() {
   questions.value.forEach((q) => {
     ans[q.id] = q.type === 'multi' ? [] : ''
   })
+  qIndex.value = 0
+  questionPhase.value = 'answer'
   step.value = 3
 }
 
@@ -621,10 +1058,16 @@ async function generateFabricated() {
 }
 
 async function startPolish() {
+  if (!polishSelection.value.length) {
+    ElMessage.warning('请至少勾选一段需要润色的经历')
+    return
+  }
   busy.value = true
   startProgress()
   try {
-    const r = await http.post(`/resumes/${resumeId.value}/polish`)
+    const r = await http.post(`/resumes/${resumeId.value}/polish`, {
+      ref_ids: polishSelection.value
+    })
     applyResumeState(r)
     userFeedback.value = ''
     fabricatePhase.value = 'review'
@@ -704,49 +1147,114 @@ function moveUp(i) { moveExperience(i, i - 1) }
 function moveDown(i) { moveExperience(i, i + 1) }
 
 async function submitAnswers() {
+  if (missingRequiredCount.value) {
+    questionPhase.value = 'summary'
+    ElMessage.warning(`还有 ${missingRequiredCount.value} 道必答题未填写，请补全后再继续`)
+    return
+  }
   busy.value = true
   startProgress()
   try {
-    const answers = questions.value.map((q) => ({
-      id: q.id,
-      question: q.question,
-      answer: Array.isArray(ans[q.id]) ? ans[q.id].join('、') : (ans[q.id] || '')
-    }))
-    await http.post(`/resumes/${resumeId.value}/answers`, { answers })
+    await http.post(`/resumes/${resumeId.value}/answers`, {
+      answers: collectAnswers(),
+      draft: false
+    })
     await fetchSeQuestions()
     step.value = 4
-  } finally {
-    stopProgress()
-    busy.value = false
-  }
-}
-
-async function submitAndGenerate() {
-  busy.value = true
-  startProgress()
-  try {
-    const answers = []
-    let supplement = ''
-    for (const q of seQuestions.value) {
-      const val = Array.isArray(seAns[q.id]) ? seAns[q.id].join('、') : (seAns[q.id] || '')
-      if (q.id === 'supplement') {
-        supplement = val
-        continue
-      }
-      answers.push({ id: q.id, question: q.question, answer: val })
-    }
-    await http.post('/self-evaluation/generate', {
-      resume_id: resumeId.value,
-      answers,
-      supplement
-    })
-    step.value = 5
-    await http.post(`/resumes/${resumeId.value}/generate`)
-    ElMessage.success('简历已生成')
-    router.push(`/resume/${resumeId.value}`)
+  } catch (e) {
+    ElMessage.error(e.message || '保存答案失败')
   } finally {
     stopProgress()
     busy.value = false
   }
 }
 </script>
+
+<style scoped>
+.qa-progress {
+  display: flex;
+  align-items: center;
+  margin-bottom: 14px;
+  gap: 4px;
+}
+.qa-card {
+  border: 1px solid #e6e8eb;
+  border-radius: 10px;
+  padding: 20px 22px;
+  background: #fff;
+}
+.qa-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.qa-question {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.6;
+  margin-bottom: 8px;
+  color: #303133;
+}
+.qa-why {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 14px;
+}
+.qa-input {
+  margin-bottom: 16px;
+}
+.qa-input :deep(.el-radio-group),
+.qa-input :deep(.el-checkbox-group) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qa-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px dashed #ebeef5;
+}
+.qa-sum-item {
+  border-top: 1px dashed #ebeef5;
+  padding: 10px 0;
+}
+.qa-sum-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.qa-sum-answer {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #606266;
+  background: #f7f8fa;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+.qa-sum-answer.empty {
+  color: #c0c4cc;
+}
+.se-preview {
+  font-size: 14px;
+  line-height: 1.9;
+  color: #303133;
+  background: #fbfcfd;
+  border-left: 3px solid #409eff;
+  border-radius: 6px;
+  padding: 14px 16px;
+  min-height: 80px;
+}
+.se-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+</style>
