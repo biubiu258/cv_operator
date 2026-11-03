@@ -1,3 +1,21 @@
 /frontend/node_modules/
+/frontend/dist/
 /user_information/
 /backend/data/
+/backend/output/
+
+# 隐私与本地状态
+backend/resume.db
+backend/.secret.key
+backend/.venv/
+
+# 临时/中间产物
+_tmpl_extract/
+_tmpl_engineer_unpack/
+_tmpl_doc_pretty.xml
+.trae/
+.idea/
+
+# Python 缓存
+__pycache__/
+*.py[cod]

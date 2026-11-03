@@ -14,7 +14,9 @@ from ..deps import ensure_llm_ready, get_active_user
 from ..progress import broker
 from ..services import jd_parser, profile as profile_svc
 from ..services import fabricate as fabricate_svc
+from ..services import polish as polish_svc
 from ..services import resume_generator, self_evaluation as se_svc
+from ..services import timeline
 from ..services.prompting import get_length_budget
 
 router = APIRouter(tags=["resumes"])
@@ -64,7 +66,9 @@ def _render_template(db: Session, resume, template: str, force: bool = False) ->
         target_position=resume.target_position, sections=resume.sections,
         fabricated=resume.fabricated, skills_curated=resume.skills_curated,
         expected_salary=salary, include_salary=resume.include_salary,
-        template=template, length=resume.length, custom_pages=resume.custom_pages)
+        template=template, length=resume.length, custom_pages=resume.custom_pages,
+        polished_experiences=resume.polished_experiences,
+        manual_order=resume.manual_order or {})
     paths[template] = out_path
     resume.output_paths = paths
     resume.output_path = out_path
@@ -110,7 +114,7 @@ def get_resume(resume_id: int, db: Session = Depends(get_db)):
 
 @router.put("/resumes/{resume_id}", response_model=schemas.ResumeOut)
 def update_resume(resume_id: int, data: schemas.ResumeUpdateIn, db: Session = Depends(get_db)):
-    """详情页编辑保存：个人简介/自我评价/包含模块。
+    """详情页编辑保存：个人简介/自我评价/包含模块/经历排序。
 
     仅更新数据库内容；docx 模板需再调 rebuild 重新排版，网页版模板预览实时生效。
     """
@@ -121,6 +125,12 @@ def update_resume(resume_id: int, data: schemas.ResumeUpdateIn, db: Session = De
         resume.self_evaluation = data.self_evaluation
     if data.sections is not None:
         resume.sections = data.sections
+    if data.fabricated is not None:
+        resume.fabricated = data.fabricated
+    if data.polished_experiences is not None:
+        resume.polished_experiences = data.polished_experiences
+    if data.manual_order is not None:
+        resume.manual_order = data.manual_order
     db.commit()
     db.refresh(resume)
     return resume
@@ -158,6 +168,8 @@ def get_render_context(resume_id: int, db: Session = Depends(get_db)):
         "target_position": resume.target_position or "",
         "sections": resume.sections or [],
         "fabricated": resume.fabricated or [],
+        "polished_experiences": resume.polished_experiences or [],
+        "timeline_warnings": resume.timeline_warnings,
         "skills_curated": resume.skills_curated or [],
         "expected_salary": resume.expected_salary or resume.user.expected_salary or "",
         "include_salary": resume.include_salary if resume.include_salary is not None else True,
@@ -165,6 +177,7 @@ def get_render_context(resume_id: int, db: Session = Depends(get_db)):
         "custom_pages": resume.custom_pages,
         "template": resume.template or "classic",
         "budget": get_length_budget(resume.length, resume.custom_pages),
+        "manual_order": resume.manual_order or {},
     }
 
 
@@ -210,6 +223,7 @@ def rollback(resume_id: int, data: schemas.RollbackIn, db: Session = Depends(get
         resume.status = "parsed" if resume.jd_summary else "draft"
     else:  # jd
         resume.fabricated = []
+        resume.polished_experiences = []
         resume.interview_prep = {}
         resume.questions = []
         resume.answers = []
@@ -277,6 +291,9 @@ async def fabricate(resume_id: int, data: schemas.FabricateIn, db: Session = Dep
         resume.jd_summary = await jd_parser.parse_jd(
             resume.jd_text, ctx["base_url"], ctx["api_key"], ctx["model"])
 
+    # 三种经历模式互斥：杜撰 / 按 JD 润色真实经历 / 原文使用真实经历。
+    # 进入杜撰或原文模式时清空另一模式的产物，避免旧经历残留混入简历。
+    resume.polished_experiences = []
     fabricated = []
     if data.fabricate:
         _set_progress(db, resume, "正在生成经历蓝本…")
@@ -284,9 +301,12 @@ async def fabricate(resume_id: int, data: schemas.FabricateIn, db: Session = Dep
             resume.jd_summary, prof, ctx["base_url"], ctx["api_key"], ctx["model"],
             types=data.types, count=data.count, extra_jd=data.extra_jd,
             length=resume.length, custom_pages=resume.custom_pages)
-    resume.fabricated = fabricated
-    if data.fabricate and fabricated:
-        _save_fabricate_version(db, resume, fabricated)
+        resume.fabricated = fabricated
+        if fabricated:
+            _save_fabricate_version(db, resume, fabricated)
+    else:
+        # 「只使用真实经历原文」：同时清空杜撰与润色产物
+        resume.fabricated = []
     resume.progress = ""
     db.commit()
     db.refresh(resume)
@@ -316,6 +336,25 @@ async def revise_fabricate(resume_id: int, data: schemas.FabricateReviseIn,
     return resume
 
 
+@router.post("/resumes/{resume_id}/fabricate/save", response_model=schemas.ResumeOut)
+def save_fabricated(resume_id: int, data: schemas.ExperiencesSaveIn,
+                    db: Session = Depends(get_db)):
+    """保存用户手动编辑后的杜撰经历（不调用 LLM），做日期规范化与类型兜底。"""
+    resume = _ensure_resume(db, resume_id)
+    valid = set(("project", "internship", "work", "other"))
+    experiences = []
+    for x in data.experiences:
+        if not isinstance(x, dict) or not x.get("type"):
+            continue
+        if x.get("type") not in valid:
+            x["type"] = "project"
+        experiences.append(x)
+    resume.fabricated = timeline.normalize_experiences(experiences)
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
 @router.post("/resumes/{resume_id}/fabricate/confirm", response_model=schemas.ResumeOut)
 async def confirm_fabricate(resume_id: int, db: Session = Depends(get_db)):
     """确认经历后，生成面试准备包。"""
@@ -326,10 +365,75 @@ async def confirm_fabricate(resume_id: int, db: Session = Depends(get_db)):
         resume.jd_summary = await jd_parser.parse_jd(
             resume.jd_text, ctx["base_url"], ctx["api_key"], ctx["model"])
     _set_progress(db, resume, "正在生成面试准备包…")
+    # 最终写进简历的经历：杜撰优先，其次按 JD 润色过的真实经历
+    final_experiences = resume.fabricated or resume.polished_experiences or []
     resume.interview_prep = await fabricate_svc.generate_interview_prep(
         resume.jd_summary, profile_svc.user_profile_dict(resume.user),
-        resume.fabricated, ctx["base_url"], ctx["api_key"], ctx["model"])
+        final_experiences, ctx["base_url"], ctx["api_key"], ctx["model"])
     resume.progress = ""
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
+@router.post("/resumes/{resume_id}/polish", response_model=schemas.ResumeOut)
+async def polish(resume_id: int, db: Session = Depends(get_db)):
+    """按 JD 润色档案中的真实经历：只优化表述，公司/岗位/时间等事实保持不变。"""
+    ctx = ensure_llm_ready(db)
+    resume = _ensure_resume(db, resume_id)
+    prof = profile_svc.user_profile_dict(resume.user)
+    if not resume.jd_summary:
+        _set_progress(db, resume, "正在解析岗位 JD…")
+        resume.jd_summary = await jd_parser.parse_jd(
+            resume.jd_text, ctx["base_url"], ctx["api_key"], ctx["model"])
+
+    if not (prof.get("internships") or prof.get("projects")):
+        raise HTTPException(status_code=400, detail="档案中还没有实习或项目经历，暂无可润色内容")
+
+    _set_progress(db, resume, "正在按 JD 润色真实经历…")
+    polished = await polish_svc.polish_experiences(
+        resume.jd_summary, prof, ctx["base_url"], ctx["api_key"], ctx["model"],
+        length=resume.length, custom_pages=resume.custom_pages)
+    # 润色与杜撰互斥，进入润色模式时清空杜撰产物
+    resume.fabricated = []
+    resume.polished_experiences = polished
+    resume.progress = ""
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
+@router.post("/resumes/{resume_id}/polish/revise", response_model=schemas.ResumeOut)
+async def revise_polish(resume_id: int, data: schemas.FabricateReviseIn,
+                        db: Session = Depends(get_db)):
+    """基于用户修改意见微调润色稿，事实字段继续锁定。"""
+    ctx = ensure_llm_ready(db)
+    resume = _ensure_resume(db, resume_id)
+    if not resume.jd_summary:
+        _set_progress(db, resume, "正在解析岗位 JD…")
+        resume.jd_summary = await jd_parser.parse_jd(
+            resume.jd_text, ctx["base_url"], ctx["api_key"], ctx["model"])
+    _set_progress(db, resume, "正在根据意见调整润色…")
+    resume.polished_experiences = await polish_svc.revise_polished(
+        resume.jd_summary, data.experiences, data.feedback,
+        ctx["base_url"], ctx["api_key"], ctx["model"])
+    resume.progress = ""
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
+@router.post("/resumes/{resume_id}/polish/save", response_model=schemas.ResumeOut)
+def save_polish(resume_id: int, data: schemas.ExperiencesSaveIn, db: Session = Depends(get_db)):
+    """保存用户手动编辑后的润色经历（不调用 LLM）。
+
+    服务端再次以档案事实为准锁定公司/岗位/时间等字段，只接受表述层修改，
+    并做日期规范化，保证润色模式不会经手动编辑变成虚构经历。
+    """
+    resume = _ensure_resume(db, resume_id)
+    originals = polish_svc.collect_real_experiences(profile_svc.user_profile_dict(resume.user))
+    locked = polish_svc.preserve_identity(originals, data.experiences)
+    resume.polished_experiences = timeline.normalize_experiences(locked)
     db.commit()
     db.refresh(resume)
     return resume

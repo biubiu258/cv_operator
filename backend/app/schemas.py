@@ -169,10 +169,13 @@ class RebuildIn(BaseModel):
 
 
 class ResumeUpdateIn(BaseModel):
-    """详情页可编辑字段：个人简介、自我评价、包含模块。均为可选，传什么改什么。"""
+    """详情页可编辑字段：个人简介、自我评价、包含模块、经历数组（重排序用）。均为可选，传什么改什么。"""
     personal_summary: Optional[str] = None
     self_evaluation: Optional[str] = None
     sections: Optional[List[str]] = None
+    fabricated: Optional[list] = None
+    polished_experiences: Optional[list] = None
+    manual_order: Optional[dict] = None
 
 
 class RollbackIn(BaseModel):
@@ -205,6 +208,11 @@ class FabricateIn(BaseModel):
 class FabricateReviseIn(BaseModel):
     experiences: List[dict] = []
     feedback: str = ""
+
+
+class ExperiencesSaveIn(BaseModel):
+    """经历手动编辑后的保存（杜撰稿/润色稿通用，仅持久化，不调用 LLM）。"""
+    experiences: List[dict] = []
 
 
 class AnswerItem(BaseModel):
@@ -265,6 +273,8 @@ class ResumeOut(BaseModel):
     questions: list = []
     answers: list = []
     fabricated: list = []
+    polished_experiences: list = []
+    timeline_warnings: List[str] = []
     interview_prep: dict = {}
     se_questions: list = []
     se_answers: list = []
@@ -283,7 +293,8 @@ class ResumeOut(BaseModel):
         return v if isinstance(v, dict) else {}
 
     @field_validator(
-        "questions", "answers", "fabricated", "sections",
+        "questions", "answers", "fabricated", "polished_experiences",
+        "timeline_warnings", "sections",
         "se_questions", "se_answers", "skills_curated", mode="before")
     @classmethod
     def _coerce_list(cls, v):

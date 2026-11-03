@@ -8,7 +8,7 @@
 import json
 from datetime import datetime
 
-from . import llm_client
+from . import llm_client, timeline
 from .prompting import get_length_budget, length_hint, render_prompt
 
 _ALLOWED = ("project", "internship", "work", "other")
@@ -39,6 +39,7 @@ def _parse_experiences(raw: str) -> list:
             t = "project"
         out.append({
             "type": t,
+            "ref_id": it.get("ref_id") or "",
             "title": it.get("title") or "",
             "role": it.get("role") or "",
             "tech_stack": it.get("tech_stack") or "",
@@ -58,6 +59,7 @@ def _skills_experiences(user_profile: dict) -> str:
         for s in user_profile.get("skills", [])
     ]
     return json.dumps({
+        "教育背景": user_profile.get("educations", []),
         "技能及熟练度": skills,
         "现有实习经历": user_profile.get("internships", []),
         "现有项目经历": user_profile.get("projects", []),
@@ -100,10 +102,13 @@ async def fabricate_experiences(
 
     selected = "、".join(_TYPE_LABELS[t] for t in types)
 
+    # 时间窗口由代码确定性分配（避开在校期/真实经历，补齐就业链空档），LLM 不得自定时间
+    plan = timeline.build_timeline_plan(user_profile, types, count)
+
     extra_block = ""
     if extra_jd and extra_jd.strip():
         extra_block = (
-            f"参考 JD（其他岗位，公司/岗位真实存在）：{extra_jd.strip()}\n"
+            f"参考 JD（其他岗位 JD，公司/岗位真实存在）：{extra_jd.strip()}\n"
             "请优先以该 JD 中的公司与岗位为蓝本生成经历。\n"
         )
 
@@ -115,6 +120,7 @@ async def fabricate_experiences(
         length_hint=length_hint(budget),
         jd_summary=json.dumps(jd_summary, ensure_ascii=False),
         skills_experiences=_skills_experiences(user_profile),
+        timeline_plan=json.dumps(plan, ensure_ascii=False),
         **_time_context(user_profile),
     )
     raw = await llm_client.chat(
@@ -122,7 +128,8 @@ async def fabricate_experiences(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.7, json_mode=True,
     )
-    return _parse_experiences(raw)
+    experiences = _parse_experiences(raw)
+    return timeline.enforce_plan(experiences, plan, user_profile)
 
 
 async def revise_experiences(
@@ -148,7 +155,16 @@ async def revise_experiences(
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         temperature=0.6, json_mode=True,
     )
-    return _parse_experiences(raw)
+    revised = _parse_experiences(raw)
+    # 修改阶段时间窗口已锁定：以用户确认过的蓝本时间为「计划」，强制 LLM 保留原日期，
+    # 避免一次措辞修改意外制造空档/重叠（用户若明确要求改时间，可在编辑卡片手改）。
+    locked_plan: dict = {}
+    for x in experiences or []:
+        locked_plan.setdefault(x.get("type", "project"), []).append({
+            "start_date": x.get("start_date", ""),
+            "end_date": x.get("end_date", ""),
+        })
+    return timeline.enforce_plan(revised, locked_plan, user_profile)
 
 
 async def generate_interview_prep(

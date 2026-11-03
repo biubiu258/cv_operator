@@ -8,7 +8,7 @@
         <el-steps :active="step" finish-status="success" align-center style="margin-bottom:28px">
           <el-step title="填写信息" />
           <el-step title="解析 JD" />
-          <el-step title="经历杜撰(可选)" />
+          <el-step title="经历优化(可选)" />
           <el-step title="回答必要问题" />
           <el-step title="自我评价问答" />
           <el-step title="生成简历" />
@@ -80,22 +80,23 @@
           </el-descriptions>
           <div style="margin-top:16px">
             <el-button @click="step = 0">返回修改</el-button>
-            <el-button type="primary" :disabled="parsing" :loading="parsing" @click="step = 2">下一步：经历杜撰</el-button>
+            <el-button type="primary" :disabled="parsing" :loading="parsing" @click="step = 2">下一步：经历优化</el-button>
           </div>
         </div>
 
-        <!-- 2 经历杜撰（可选）：生成 → 编辑/提意见让 AI 改 → 确认 -->
+        <!-- 2 经历优化（可选）：杜撰 / 按 JD 润色真实经历 / 原文使用 -->
         <div v-else-if="step === 2">
           <template v-if="fabricatePhase === 'config'">
             <div class="page-sub" style="margin-bottom:16px">
-              该步骤可选：是否由 AI 生成与 JD 匹配的经历，填充简历空白？
+              该步骤可选：AI 可以帮你生成与 JD 匹配的经历填充空白，也可以只润色你已有的真实经历。
             </div>
-            <el-radio-group v-model="fabricateMode">
-              <el-radio :label="true">杜撰经历（AI 生成，便于匹配 JD）</el-radio>
-              <el-radio :label="false">只使用我的真实经历</el-radio>
+            <el-radio-group v-model="expMode">
+              <el-radio label="fabricate">杜撰经历（AI 生成新经历，时间线自动避开空档）</el-radio>
+              <el-radio label="polish">润色我的真实经历（按 JD 优化表述，不改变事实）</el-radio>
+              <el-radio label="real">直接使用真实经历原文</el-radio>
             </el-radio-group>
 
-            <template v-if="fabricateMode">
+            <template v-if="expMode === 'fabricate'">
               <div style="font-weight:600;margin:20px 0 8px">其他岗位 JD（可选，用于生成更真实的经历）</div>
               <el-input v-model="fabricateJd" type="textarea" :rows="3" placeholder="粘贴一个真实存在的公司+岗位 JD，AI 将据此生成更贴合、可经得起背调的经历…" />
               <div class="text-muted" style="font-size:12px;margin-top:4px">公司真实存在、岗位真实存在，只是求职者未真实入职。</div>
@@ -108,34 +109,70 @@
                 <el-checkbox label="other">其他</el-checkbox>
               </el-checkbox-group>
 
-              <div style="font-weight:600;margin:20px 0 8px">生成数量（最高 5 段）</div>
-              <el-input-number v-model="fabricateCount" :min="1" :max="5" />
+              <div style="font-weight:600;margin:20px 0 8px">生成数量（当前篇幅最多 {{ fabMax }} 段）</div>
+              <el-input-number v-model="fabricateCount" :min="1" :max="fabMax" />
+              <div class="text-muted" style="font-size:12px;margin-top:6px">
+                系统会根据你的入学/毕业时间与真实经历自动分配每段经历的起止月份，保证就业链连续、无空档无重叠。
+              </div>
             </template>
 
-            <div class="text-muted" style="font-size:12px;margin-top:12px">
-              生成后可逐项修改，或对 AI 提出整体修改意见让其调整。
-            </div>
+            <template v-else-if="expMode === 'polish'">
+              <el-alert type="info" :closable="false" style="margin:16px 0">
+                <template #title>
+                  润色只优化「核心工作 / 量化成果」的表达（STAR、JD 关键词、合理量化），
+                  公司、岗位、时间、技术栈等事实保持不变，也不会新增或删除经历。
+                </template>
+              </el-alert>
+              <div class="text-muted" style="font-size:13px">
+                档案中当前有
+                <b>{{ (profile.internships || []).length }}</b> 段实习经历、
+                <b>{{ (profile.projects || []).length }}</b> 段项目经历可润色。
+              </div>
+              <el-button v-if="!realCount" type="primary" disabled style="margin-top:16px">暂无可润色的经历</el-button>
+            </template>
+
+            <template v-else>
+              <el-alert type="info" :closable="false" style="margin:16px 0">
+                <template #title>简历将直接使用档案中的实习与项目经历原文，不做 AI 加工。</template>
+              </el-alert>
+            </template>
+
             <div style="margin-top:20px">
               <el-button @click="step = 1">上一步</el-button>
-              <el-button v-if="fabricateMode" type="primary" :loading="busy" @click="generateFabricated">生成经历</el-button>
-              <el-button v-else type="primary" :loading="busy" @click="confirmAndContinue">继续（使用真实经历）</el-button>
+              <el-button v-if="expMode === 'fabricate'" type="primary" :loading="busy" @click="generateFabricated">生成经历</el-button>
+              <el-button v-else-if="expMode === 'polish' && realCount" type="primary" :loading="busy" @click="startPolish">开始 AI 润色</el-button>
+              <el-button v-else type="primary" :loading="busy" @click="confirmAndContinue">继续（使用真实经历原文）</el-button>
             </div>
           </template>
 
           <template v-else>
             <div class="page-sub" style="margin-bottom:8px">
-              已生成 {{ fabricated.length }} 段经历，可逐项修改，或在下方对 AI 提出整体修改意见。
+              <template v-if="expMode === 'polish'">
+                已润色 {{ editingExperiences.length }} 段真实经历，事实字段已锁定，可调整「核心工作 / 量化成果」，或让 AI 按意见继续修改。
+              </template>
+              <template v-else>
+                已生成 {{ editingExperiences.length }} 段经历，可逐项修改，或在下方对 AI 提出整体修改意见。
+              </template>
             </div>
 
-            <div v-for="(e, i) in fabricated" :key="i" style="border:1px solid #e6e8eb;border-radius:8px;padding:14px;margin-bottom:14px">
+            <el-alert
+              v-for="(w, wi) in timelineWarnings" :key="wi"
+              type="warning" :closable="false" show-icon style="margin-bottom:8px"
+              :title="w" />
+
+            <div v-for="(e, i) in editingExperiences" :key="i" style="border:1px solid #e6e8eb;border-radius:8px;padding:14px;margin-bottom:14px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <b>第 {{ i + 1 }} 段</b>
-                <el-button size="small" type="danger" text @click="removeFabricated(i)">删除</el-button>
+                <b>第 {{ i + 1 }} 段<span v-if="expMode === 'polish'" class="text-muted" style="font-size:12px;font-weight:400">（真实经历）</span></b>
+                <div>
+                  <el-button size="small" text :disabled="i === 0" @click="moveUp(i)">↑ 上移</el-button>
+                  <el-button size="small" text :disabled="i === editingExperiences.length - 1" @click="moveDown(i)">↓ 下移</el-button>
+                  <el-button v-if="expMode !== 'polish'" size="small" type="danger" text @click="removeExperience(i)">删除</el-button>
+                </div>
               </div>
               <el-row :gutter="10">
                 <el-col :span="8">
                   <div class="text-muted" style="font-size:12px;margin-bottom:4px">类型</div>
-                  <el-select v-model="e.type" style="width:100%">
+                  <el-select v-model="e.type" style="width:100%" :disabled="expMode === 'polish'">
                     <el-option value="project" label="项目经历" />
                     <el-option value="internship" label="实习经历" />
                     <el-option value="work" label="全职经历" />
@@ -143,26 +180,26 @@
                   </el-select>
                 </el-col>
                 <el-col :span="8">
-                  <div class="text-muted" style="font-size:12px;margin-bottom:4px">项目/公司名</div>
-                  <el-input v-model="e.title" placeholder="项目名 / 公司名" />
+                  <div class="text-muted" style="font-size:12px;margin-bottom:4px">{{ e.type === 'project' ? '项目名' : '公司名' }}</div>
+                  <el-input v-model="e.title" :placeholder="e.type === 'project' ? '项目名' : '公司名'" :disabled="expMode === 'polish'" />
                 </el-col>
                 <el-col :span="8">
-                  <div class="text-muted" style="font-size:12px;margin-bottom:4px">角色/职位</div>
-                  <el-input v-model="e.role" placeholder="角色 / 职位" />
+                  <div class="text-muted" style="font-size:12px;margin-bottom:4px">{{ e.type === 'project' ? '角色' : '职位' }}</div>
+                  <el-input v-model="e.role" :placeholder="e.type === 'project' ? '角色' : '职位'" :disabled="expMode === 'polish'" />
                 </el-col>
               </el-row>
               <el-row :gutter="10" style="margin-top:10px">
                 <el-col :span="8">
                   <div class="text-muted" style="font-size:12px;margin-bottom:4px">开始时间</div>
-                  <el-input v-model="e.start_date" placeholder="YYYY.MM" />
+                  <el-input v-model="e.start_date" placeholder="YYYY.MM" :disabled="expMode === 'polish'" />
                 </el-col>
                 <el-col :span="8">
                   <div class="text-muted" style="font-size:12px;margin-bottom:4px">结束时间</div>
-                  <el-input v-model="e.end_date" placeholder="YYYY.MM" />
+                  <el-input v-model="e.end_date" placeholder="YYYY.MM 或 至今" :disabled="expMode === 'polish'" />
                 </el-col>
                 <el-col :span="8">
                   <div class="text-muted" style="font-size:12px;margin-bottom:4px">技术栈</div>
-                  <el-input v-model="e.tech_stack" placeholder="如 Python、Vue" />
+                  <el-input v-model="e.tech_stack" placeholder="如 Python、Vue" :disabled="expMode === 'polish'" />
                 </el-col>
               </el-row>
               <div class="text-muted" style="font-size:12px;margin:10px 0 4px">核心工作</div>
@@ -172,11 +209,16 @@
             </div>
 
             <div style="font-weight:600;margin:8px 0 6px">给 AI 的修改意见（可选）</div>
-            <el-input v-model="userFeedback" type="textarea" :rows="3" placeholder="例如：第一段成果请量化更具体；把实习改成项目经历；整体语气更正式…" />
+            <el-input v-model="userFeedback" type="textarea" :rows="3"
+              :placeholder="expMode === 'polish'
+                ? '例如：第二段再突出与大模型相关的工作；成果量化再具体一些…'
+                : '例如：第一段成果请量化更具体；整体语气更正式…'" />
 
             <div style="margin-top:16px">
               <el-button @click="fabricatePhase = 'config'">返回设置</el-button>
-              <el-button :loading="busy" @click="reviseFabricated">让 AI 按意见修改</el-button>
+              <el-button :loading="busy" @click="reviseCurrent">
+                让 AI 按意见{{ expMode === 'polish' ? '润色' : '修改' }}
+              </el-button>
               <el-button type="primary" :loading="busy" @click="confirmAndContinue">确认并继续</el-button>
             </div>
           </template>
@@ -259,10 +301,14 @@ const targetPosition = ref('')
 const expectedSalary = ref('')
 const includeSalary = ref(true)
 const sections = ref(MODULES.map((m) => m.key))
-const fabricateMode = ref(true)
+const expMode = ref('fabricate') // fabricate 杜撰 | polish 润色真实经历 | real 原文使用
 const resumeId = ref(null)
 const jdSummary = ref({})
 const fabricated = ref([])
+const polished = ref([])
+const timelineWarnings = ref([])
+const profile = ref({})
+const fabMax = ref(5)
 const interviewPrep = ref({})
 const questions = ref([])
 const ans = reactive({})
@@ -278,6 +324,26 @@ const fabricatePhase = ref('config')
 const userFeedback = ref('')
 const length = ref('fresh')
 const customPages = ref(2)
+
+// 复核阶段当前编辑的经历列表：润色模式用润色稿，其余用杜撰稿
+const editingExperiences = computed(() =>
+  expMode.value === 'polish' ? polished.value : fabricated.value)
+const realCount = computed(() =>
+  (profile.value.internships?.length || 0) + (profile.value.projects?.length || 0))
+
+async function loadBudget() {
+  if (!resumeId.value) return
+  try {
+    const rc = await http.get(`/resumes/${resumeId.value}/render-context`)
+    fabMax.value = rc.budget?.fabricate_max || 5
+  } catch (e) { /* 预算获取失败保留默认值 */ }
+}
+
+async function loadProfile() {
+  try {
+    profile.value = await http.get('/users/active')
+  } catch (e) { profile.value = {} }
+}
 
 // 进度推送：WebSocket（替代 HTTP 轮询），断线自动重连（最多 3 次，重连时提示用户）
 let progressWs = null
@@ -399,12 +465,19 @@ async function loadResume() {
   sections.value = (r.sections && r.sections.length) ? r.sections : MODULES.map((m) => m.key)
   jdSummary.value = r.jd_summary || {}
   fabricated.value = r.fabricated || []
+  polished.value = r.polished_experiences || []
+  timelineWarnings.value = r.timeline_warnings || []
   interviewPrep.value = r.interview_prep || {}
   questions.value = r.questions || []
-  fabricateMode.value = (r.fabricated || []).length > 0
+  if (fabricated.value.length) {
+    expMode.value = 'fabricate'
+  } else if (polished.value.length) {
+    expMode.value = 'polish'
+  }
   const fabTypes = [...new Set((r.fabricated || []).map((x) => x.type).filter(Boolean))]
   if (fabTypes.length) fabricateTypes.value = fabTypes
   if ((r.fabricated || []).length) fabricateCount.value = (r.fabricated || []).length
+  loadBudget()
 
   // 恢复必要问题的已填答案（多选按“、”拆分回数组）
   const answersMap = {}
@@ -444,17 +517,19 @@ async function loadResume() {
     return
   }
   if (r.status === 'parsed') {
-    // 已执行过杜撰步骤：有杜撰经历回到编辑页，仅有面试准备回到设置页，否则回到解析结果
+    // 已执行过经历步骤：有杜撰/润色经历回到编辑页，仅有面试准备回到设置页，否则回到解析结果
     const hasFab = (r.fabricated || []).length > 0
+    const hasPol = (r.polished_experiences || []).length > 0
     const hasPrep = !!(r.interview_prep && Object.keys(r.interview_prep).length)
-    step.value = hasFab || hasPrep ? 2 : 1
-    fabricatePhase.value = hasFab ? 'review' : 'config'
+    step.value = hasFab || hasPol || hasPrep ? 2 : 1
+    fabricatePhase.value = (hasFab || hasPol) ? 'review' : 'config'
     return
   }
   step.value = 0
 }
 
 onMounted(async () => {
+  await loadProfile()
   if (!editId.value) return
   busy.value = true
   try {
@@ -489,8 +564,10 @@ async function createTask() {
     // 后台解析 JD，完成后刷新结果并解锁「下一步」
     http.post(`/resumes/${r.id}/parse`).then((res) => {
       jdSummary.value = res.jd_summary || {}
+      timelineWarnings.value = res.timeline_warnings || []
       parsing.value = false
       stopProgress()
+      loadBudget()
     }).catch((e) => {
       parsing.value = false
       stopProgress()
@@ -512,6 +589,12 @@ async function genQuestions() {
   step.value = 3
 }
 
+function applyResumeState(r) {
+  fabricated.value = r.fabricated || []
+  polished.value = r.polished_experiences || []
+  timelineWarnings.value = r.timeline_warnings || []
+}
+
 async function generateFabricated() {
   if (fabricateTypes.value.length === 0) {
     ElMessage.warning('请至少选择一种杜撰经历类型')
@@ -526,26 +609,49 @@ async function generateFabricated() {
       count: fabricateCount.value,
       extra_jd: fabricateJd.value
     })
-    fabricated.value = r.fabricated || []
+    applyResumeState(r)
     userFeedback.value = ''
     fabricatePhase.value = 'review'
+  } catch (e) {
+    ElMessage.error(e.message || '生成失败')
   } finally {
     stopProgress()
     busy.value = false
   }
 }
 
-async function reviseFabricated() {
+async function startPolish() {
   busy.value = true
   startProgress()
   try {
-    const r = await http.post(`/resumes/${resumeId.value}/fabricate/revise`, {
-      experiences: fabricated.value,
+    const r = await http.post(`/resumes/${resumeId.value}/polish`)
+    applyResumeState(r)
+    userFeedback.value = ''
+    fabricatePhase.value = 'review'
+  } catch (e) {
+    ElMessage.error(e.message || '润色失败')
+  } finally {
+    stopProgress()
+    busy.value = false
+  }
+}
+
+// 复核页「让 AI 按意见修改」：按当前模式分别调杜撰修改 / 润色修改
+async function reviseCurrent() {
+  if (!editingExperiences.value.length) return
+  busy.value = true
+  startProgress()
+  try {
+    const url = expMode.value === 'polish' ? 'polish/revise' : 'fabricate/revise'
+    const r = await http.post(`/resumes/${resumeId.value}/${url}`, {
+      experiences: editingExperiences.value,
       feedback: userFeedback.value
     })
-    fabricated.value = r.fabricated || []
+    applyResumeState(r)
     userFeedback.value = ''
-    ElMessage.success('已按意见修改')
+    ElMessage.success(expMode.value === 'polish' ? '已按意见润色' : '已按意见修改')
+  } catch (e) {
+    ElMessage.error(e.message || '修改失败')
   } finally {
     stopProgress()
     busy.value = false
@@ -556,17 +662,46 @@ async function confirmAndContinue() {
   busy.value = true
   startProgress()
   try {
+    if (expMode.value === 'polish') {
+      // 持久化用户对润色稿的手动修改（仅表述字段）
+      const r = await http.post(`/resumes/${resumeId.value}/polish/save`, {
+        experiences: polished.value
+      })
+      applyResumeState(r)
+    } else if (expMode.value === 'fabricate') {
+      // 持久化用户对杜撰蓝本的手动修改（旧版此处会丢失手改内容）
+      const r = await http.post(`/resumes/${resumeId.value}/fabricate/save`, {
+        experiences: fabricated.value
+      })
+      applyResumeState(r)
+    } else if (expMode.value === 'real') {
+      // 原文模式：清空任何杜撰/润色产物（修复切换模式后旧经历残留问题）
+      const r = await http.post(`/resumes/${resumeId.value}/fabricate`, { fabricate: false })
+      applyResumeState(r)
+    }
     await http.post(`/resumes/${resumeId.value}/fabricate/confirm`)
     await genQuestions()
+  } catch (e) {
+    ElMessage.error(e.message || '操作失败')
   } finally {
     stopProgress()
     busy.value = false
   }
 }
 
-function removeFabricated(i) {
-  fabricated.value.splice(i, 1)
+function removeExperience(i) {
+  editingExperiences.value.splice(i, 1)
 }
+
+// 手动排序：上移/下移经历条目
+function moveExperience(from, to) {
+  const list = editingExperiences.value
+  if (to < 0 || to >= list.length) return
+  const [item] = list.splice(from, 1)
+  list.splice(to, 0, item)
+}
+function moveUp(i) { moveExperience(i, i - 1) }
+function moveDown(i) { moveExperience(i, i + 1) }
 
 async function submitAnswers() {
   busy.value = true

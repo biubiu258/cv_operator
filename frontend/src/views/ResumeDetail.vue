@@ -3,6 +3,10 @@
     <div class="page-title">简历详情</div>
     <div class="page-sub">任务 #{{ resume?.id }} · 目标岗位：{{ resume?.target_position || resume?.jd_summary?.position || '未识别' }}</div>
 
+    <el-alert
+      v-for="(w, i) in (resume?.timeline_warnings || [])" :key="i"
+      type="warning" show-icon :closable="false" style="margin-bottom:10px" :title="w" />
+
     <div class="card-panel" style="margin-bottom:16px">
       <div class="card-body">
         <el-space wrap>
@@ -120,15 +124,50 @@
     </div>
 
     <div class="card-panel" style="margin-top:16px" v-if="(resume?.fabricated || []).length">
-      <div class="card-head">杜撰经历（已并入简历，面试需能自圆其说）</div>
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+        <span>杜撰经历（已并入简历，面试需能自圆其说）</span>
+        <el-button size="small" type="primary" :loading="saving" @click="saveFabricatedOrder">保存排序</el-button>
+      </div>
       <div class="card-body">
-        <div v-for="(e, i) in resume.fabricated" :key="i" style="margin-bottom:14px">
-          <b>{{ e.type === 'internship' ? '实习' : '项目' }} · {{ e.title }}</b>
+        <div v-for="(e, i) in resume.fabricated" :key="i" style="margin-bottom:14px;border:1px solid #e6e8eb;border-radius:8px;padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <b>{{ TYPE_LABELS[e.type] || '经历' }} · {{ e.title }}</b>
+            <div>
+              <el-button size="small" text :disabled="i === 0" @click="moveArr(resume.fabricated, i, i - 1)">↑ 上移</el-button>
+              <el-button size="small" text :disabled="i === resume.fabricated.length - 1" @click="moveArr(resume.fabricated, i, i + 1)">↓ 下移</el-button>
+            </div>
+          </div>
+          <span v-if="e.role" class="text-muted" style="margin-left:6px">{{ e.role }}</span>
           <span class="text-muted" style="margin-left:8px">{{ e.start_date }} - {{ e.end_date }}</span>
           <div v-if="e.tech_stack" style="margin-top:4px">技术栈：{{ e.tech_stack }}</div>
           <div v-if="e.description" style="margin-top:4px"><RichText :text="e.description" /></div>
           <div v-if="e.result" style="margin-top:4px"><b>成果：</b><RichText :text="e.result" /></div>
         </div>
+        <div class="text-muted" style="font-size:12px">篇幅预算：每种经历类型最多渲染 {{ expClip }} 条，超出部分将在最终排版时截断</div>
+      </div>
+    </div>
+
+    <div class="card-panel" style="margin-top:16px" v-if="(resume?.polished_experiences || []).length">
+      <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+        <span>真实经历（已按 JD 润色，公司/岗位/时间保持原样）</span>
+        <el-button size="small" type="primary" :loading="saving" @click="savePolishedOrder">保存排序</el-button>
+      </div>
+      <div class="card-body">
+        <div v-for="(e, i) in resume.polished_experiences" :key="i" style="margin-bottom:14px;border:1px solid #e6e8eb;border-radius:8px;padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <b>{{ TYPE_LABELS[e.type] || '经历' }} · {{ e.title }}</b>
+            <div>
+              <el-button size="small" text :disabled="i === 0" @click="moveArr(resume.polished_experiences, i, i - 1)">↑ 上移</el-button>
+              <el-button size="small" text :disabled="i === resume.polished_experiences.length - 1" @click="moveArr(resume.polished_experiences, i, i + 1)">↓ 下移</el-button>
+            </div>
+          </div>
+          <span v-if="e.role" class="text-muted" style="margin-left:6px">{{ e.role }}</span>
+          <span class="text-muted" style="margin-left:8px">{{ e.start_date }} - {{ e.end_date }}</span>
+          <div v-if="e.tech_stack" style="margin-top:4px">技术栈：{{ e.tech_stack }}</div>
+          <div v-if="e.description" style="margin-top:4px"><RichText :text="e.description" /></div>
+          <div v-if="e.result" style="margin-top:4px"><b>成果：</b><RichText :text="e.result" /></div>
+        </div>
+        <div class="text-muted" style="font-size:12px">篇幅预算：每种经历类型最多渲染 {{ expClip }} 条，超出部分将在最终排版时截断；类型合并后会独立排序</div>
       </div>
     </div>
 
@@ -171,6 +210,13 @@ const MODULES = [
   { key: 'self_evaluation', label: '自我评价' }
 ]
 
+const TYPE_LABELS = {
+  project: '项目经历',
+  internship: '实习经历',
+  work: '全职经历',
+  other: '其他经历'
+}
+
 const route = useRoute()
 const resume = ref(null)
 const converting = ref(false)
@@ -181,6 +227,7 @@ const templateList = ref([])
 const sectionsSel = ref([])
 const editing = ref('') // 'summary' | 'se' | ''
 const draft = ref('')
+const expClip = ref(0) // 篇幅预算：每种经历类型最多渲染条数（0 = 不限制）
 
 const isVueTemplate = computed(() =>
   templateList.value.find((t) => t.key === template.value)?.kind === 'vue')
@@ -202,7 +249,42 @@ onMounted(async () => {
   template.value = resume.value.template || 'classic'
   sectionsSel.value = resume.value.sections || []
   templateList.value = await http.get('/resumes/templates')
+  // 加载篇幅预算，用于提示每种经历类型最多渲染条数
+  try {
+    const rc = await http.get(`/resumes/${route.params.id}/render-context`)
+    expClip.value = rc.budget?.max_experiences || 0
+  } catch (e) { /* 预算获取失败不阻断页面 */ }
 })
+
+// 数组内移动（原地修改，触发 Vue 响应式）
+function moveArr(arr, from, to) {
+  if (!arr) return
+  if (to < 0 || to >= arr.length) return
+  const [item] = arr.splice(from, 1)
+  arr.splice(to, 0, item)
+}
+
+// 保存杜撰/润色经历的重排序
+async function saveFabricatedOrder() {
+  if (!resume.value) return
+  const current = resume.value.manual_order || {}
+  const payload = {
+    fabricated: resume.value.fabricated,
+    manual_order: { ...current, fabricated: true }
+  }
+  await saveFields(payload)
+  ElMessage.success('排序已保存')
+}
+async function savePolishedOrder() {
+  if (!resume.value) return
+  const current = resume.value.manual_order || {}
+  const payload = {
+    polished_experiences: resume.value.polished_experiences,
+    manual_order: { ...current, polished_experiences: true }
+  }
+  await saveFields(payload)
+  ElMessage.success('排序已保存')
+}
 
 async function changeTemplate(val) {
   if (!resume.value?.id) return

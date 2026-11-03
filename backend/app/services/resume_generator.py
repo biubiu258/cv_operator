@@ -361,9 +361,37 @@ def _exp_sort_key(item):
     return end if end != (0, 0) else _parse_ym(getattr(item, "start_date", ""))
 
 
-def _merge_sections(user, fabricated, limit=None):
-    """合并杜撰经历到项目/实习/工作/其他列表，按时间新→旧排序后返回四元组。limit 用于按篇幅裁剪。"""
+def _merge_sections(user, fabricated, limit=None, polished=None, manual_order=None):
+    """合并杜撰经历到项目/实习/工作/其他列表，按时间新→旧排序后返回四元组。limit 用于按篇幅裁剪。
+
+    polished 为「按 JD 润色后的真实经历」：同类型存在润色稿时，以润色稿替代档案原文
+    （公司/岗位/时间不变，仅表述优化），杜撰经历仍追加在其后。
+
+    manual_order 为 dict，形如 {"fabricated": true, "polished_experiences": true}，
+    表示用户已显式保存过该类型经历的手动排序——此时跳过按时间自动排序，尊重数组原序。
+    """
+    manual_order = manual_order or {}
+    user_sorted_fab = bool(manual_order.get("fabricated"))
+    user_sorted_pol = bool(manual_order.get("polished_experiences"))
     # 字段统一带默认值，避免手工补充的杜撰经历缺字段导致渲染 AttributeError
+    polished = polished or []
+    pol_projects = [
+        SimpleNamespace(
+            title=x.get("title") or x.get("name", ""), role=x.get("role", ""),
+            start_date=x.get("start_date", ""), end_date=x.get("end_date", ""),
+            tech_stack=x.get("tech_stack", ""),
+            description=x.get("description", ""), result=x.get("result", ""),
+        )
+        for x in polished if x.get("type") == "project"
+    ]
+    pol_internships = [
+        SimpleNamespace(
+            company=x.get("title", ""), position=x.get("role", ""),
+            start_date=x.get("start_date", ""), end_date=x.get("end_date", ""),
+            description=x.get("description", ""), achievement=x.get("result", ""),
+        )
+        for x in polished if x.get("type") == "internship"
+    ]
     fake_projects = [
         SimpleNamespace(
             title=x.get("title") or x.get("name", ""), role=x.get("role", ""),
@@ -397,15 +425,30 @@ def _merge_sections(user, fabricated, limit=None):
         )
         for x in (fabricated or []) if x.get("type") == "other"
     ]
-    projects = list(user.projects) + fake_projects
-    internships = list(user.internships) + fake_internships
+    # 有润色稿的类型用润色稿替代档案原文（润色稿本就来源于档案，事实字段一致）
+    base_projects = pol_projects if pol_projects else list(user.projects)
+    base_internships = pol_internships if pol_internships else list(user.internships)
+    projects = base_projects + fake_projects
+    internships = base_internships + fake_internships
     works = fake_works
     others = fake_others
-    # 经历按时间新→旧排列
-    projects.sort(key=_exp_sort_key, reverse=True)
-    internships.sort(key=_exp_sort_key, reverse=True)
-    works.sort(key=_exp_sort_key, reverse=True)
-    others.sort(key=_exp_sort_key, reverse=True)
+    # 排序策略：默认按时间新→旧自动排；有 manual_order 标记时尊重数组顺序
+    if user_sorted_pol or (user_sorted_fab and not base_projects):
+        pass  # 润色稿用户排过序，或纯杜撰且用户排过序 → 尊重
+    else:
+        projects.sort(key=_exp_sort_key, reverse=True)
+    if user_sorted_pol or (user_sorted_fab and not base_internships):
+        pass
+    else:
+        internships.sort(key=_exp_sort_key, reverse=True)
+    if user_sorted_fab and fake_works:
+        pass  # 用户排过杜撰的 works
+    elif fake_works:
+        works.sort(key=_exp_sort_key, reverse=True)
+    if user_sorted_fab and fake_others:
+        pass
+    elif fake_others:
+        others.sort(key=_exp_sort_key, reverse=True)
     if limit:
         projects = projects[:limit]
         internships = internships[:limit]
@@ -455,7 +498,8 @@ def build_resume_docx(user, jd_summary, personal_summary, self_evaluation, out_d
                       target_position: str = "", sections=None, fabricated=None,
                       skills_curated=None, expected_salary: str = "", include_salary: bool = True,
                       template: str = "classic", length: str = "fresh",
-                      custom_pages: int = None) -> str:
+                      custom_pages: int = None, polished_experiences=None,
+                      manual_order=None) -> str:
     spec = TEMPLATES.get(template)
     if spec is None:
         raise ValueError(f"未知简历模板：{template}")
@@ -463,20 +507,23 @@ def build_resume_docx(user, jd_summary, personal_summary, self_evaluation, out_d
         raise ValueError(f"网页版模板不支持 Word 导出：{template}")
     return spec["render"](user, jd_summary, personal_summary, self_evaluation, out_dir,
                           target_position, sections, fabricated, skills_curated,
-                          expected_salary, include_salary, length, custom_pages)
+                          expected_salary, include_salary, length, custom_pages,
+                          polished_experiences, manual_order=manual_order)
 
 
 def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                     target_position: str = "", sections=None, fabricated=None,
                     skills_curated=None, expected_salary: str = "", include_salary: bool = True,
-                    length: str = "fresh", custom_pages: int = None) -> str:
+                    length: str = "fresh", custom_pages: int = None,
+                    polished_experiences=None, manual_order=None) -> str:
     # sections 为空/None 表示包含全部模块；否则仅包含勾选模块
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"])
+        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences,
+        manual_order=manual_order)
 
     doc = _new_doc()
 
@@ -703,13 +750,15 @@ def _skill_groups(user, skills_curated):
 def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                   target_position: str = "", sections=None, fabricated=None,
                   skills_curated=None, expected_salary: str = "", include_salary: bool = True,
-                  length: str = "fresh", custom_pages: int = None) -> str:
+                  length: str = "fresh", custom_pages: int = None,
+                  polished_experiences=None, manual_order=None) -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"])
+        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences,
+        manual_order=manual_order)
 
     doc = _new_doc()
     # 双栏：左列侧边栏，右列主栏，隐藏边框

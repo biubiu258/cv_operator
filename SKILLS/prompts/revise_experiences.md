@@ -3,7 +3,7 @@
 
 # 用户提示词
 以下是已生成的经历蓝本（用户可能已做了部分修改）。请根据用户的修改意见，在现有蓝本基础上调整，尽量保留用户已改好的部分，只针对意见修改，不要无中生有地删改其他部分。
-时间线约束：当前日期为 $current_date，求职者毕业日期为 $graduation_date。调整后仍需保持时间线合理：全职（work）经历不得早于毕业日期，任何经历不得晚于当前日期，同类型经历按时间从新到旧排列。
+时间线约束（最高优先级）：当前日期为 $current_date，求职者毕业日期为 $graduation_date。严禁修改任何经历的 start_date / end_date（这些时间窗口已系统规划、保证就业链连续无空档无重叠），除非用户在修改意见中明确要求调整时间；全职（work）经历不得早于毕业日期，任何经历不得晚于当前日期；不得新增经历（除非用户明确要求），同类型经历保持时间新→旧排列。
 量化数据与成果在 description、result 中用 ** 包裹（如 **QPS 提升 50%**），用于加粗高亮，不要使用其他 markdown 语法。
 只返回 JSON（不要 markdown 代码块、不要额外文字），结构与输入一致：
 {"experiences":[{"type":"project|internship|work|other","title":"项目名/公司名","role":"角色/职位","tech_stack":"技术栈","start_date":"YYYY.MM","end_date":"YYYY.MM","description":"核心工作","result":"量化成果"}]}

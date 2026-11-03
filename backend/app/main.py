@@ -14,6 +14,7 @@ _resume_cols = {c["name"] for c in inspect(engine).get_columns("resumes")}
 for _col, _ddl in (
     ("sections", "ALTER TABLE resumes ADD COLUMN sections JSON"),
     ("fabricated", "ALTER TABLE resumes ADD COLUMN fabricated JSON"),
+    ("polished_experiences", "ALTER TABLE resumes ADD COLUMN polished_experiences JSON"),
     ("interview_prep", "ALTER TABLE resumes ADD COLUMN interview_prep JSON"),
     ("se_questions", "ALTER TABLE resumes ADD COLUMN se_questions JSON"),
     ("se_answers", "ALTER TABLE resumes ADD COLUMN se_answers JSON"),

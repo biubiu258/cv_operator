@@ -138,14 +138,14 @@ def _skill_name_prof(skill) -> tuple:
 def render(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
            target_position="", sections=None, fabricated=None,
            skills_curated=None, expected_salary="", include_salary=True,
-           length="fresh", custom_pages=None) -> str:
+           length="fresh", custom_pages=None, polished_experiences=None) -> str:
     """填充工程师模板并返回生成的 docx 路径。"""
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"])
+        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences)
 
     doc = Document(str(TEMPLATE_PATH))
     paras = doc.paragraphs

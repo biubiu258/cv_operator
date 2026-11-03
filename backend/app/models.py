@@ -126,6 +126,7 @@ class Resume(Base):
     questions = Column(JSON, default=list)
     answers = Column(JSON, default=list)
     fabricated = Column(JSON, default=list)
+    polished_experiences = Column(JSON, default=list)  # 按 JD 润色后的真实经历（事实字段不变，仅表述优化）
     interview_prep = Column(JSON, default=dict)
     se_questions = Column(JSON, default=list)
     se_answers = Column(JSON, default=list)
@@ -134,10 +135,23 @@ class Resume(Base):
     personal_summary = Column(Text, default="")
     self_evaluation = Column(Text, default="")
     output_path = Column(String(500), default="")
+    manual_order = Column(JSON, default=dict)  # 用户手动调整过排序的经历类型标记：{"fabricated": true, "polished_experiences": true}
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     user = relationship("User", back_populates="resumes")
+
+    @property
+    def timeline_warnings(self) -> list:
+        """最终就业时间线体检（空档/重叠/全职早于毕业等），动态计算不入库。"""
+        from .services.profile import user_profile_dict
+        from .services.timeline import validate_timeline
+        try:
+            return validate_timeline(
+                user_profile_dict(self.user),
+                self.fabricated or [], self.polished_experiences or [])
+        except Exception:
+            return []
 
 
 class ProgressEvent(Base):

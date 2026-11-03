@@ -200,13 +200,13 @@ def _field_line(cell, label, value):
 def render(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
            target_position="", sections=None, fabricated=None,
            skills_curated=None, expected_salary="", include_salary=True,
-           length="fresh", custom_pages=None) -> str:
+           length="fresh", custom_pages=None, polished_experiences=None) -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"])
+        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences)
     doc = _new_doc()
 
     # ===== 页首/页尾蓝色通栏条（页眉页脚固定，仿原版上下蓝条）=====
