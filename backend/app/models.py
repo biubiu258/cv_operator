@@ -127,6 +127,7 @@ class Resume(Base):
     answers = Column(JSON, default=list)
     fabricated = Column(JSON, default=list)
     polished_experiences = Column(JSON, default=list)  # 按 JD 润色后的真实经历（事实字段不变，仅表述优化）
+    polish_selection = Column(JSON, default=list)  # 用户勾选参与润色的真实经历 ref_id（空表示未启用选择，沿用全部经历）
     interview_prep = Column(JSON, default=dict)
     se_questions = Column(JSON, default=list)
     se_answers = Column(JSON, default=list)
@@ -134,6 +135,9 @@ class Resume(Base):
     progress = Column(String(200), default="")
     personal_summary = Column(Text, default="")
     self_evaluation = Column(Text, default="")
+    cover_letter = Column(Text, default="")           # 求职信正文
+    cover_letter_tone = Column(String(20), default="professional")  # professional / enthusiastic / concise
+    truncate_strategy = Column(String(30), default="time_priority")  # time_priority / keyword_priority / manual
     output_path = Column(String(500), default="")
     manual_order = Column(JSON, default=dict)  # 用户手动调整过排序的经历类型标记：{"fabricated": true, "polished_experiences": true}
     created_at = Column(DateTime, default=datetime.now)

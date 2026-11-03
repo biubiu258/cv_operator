@@ -41,6 +41,17 @@ def collect_real_experiences(user_profile: dict) -> list:
     return items
 
 
+def select_experiences(originals: list, ref_ids: list | None) -> list:
+    """按用户勾选的 ref_id 过滤真实经历；未勾选任何条目时返回空列表。
+
+    ref_ids 为空（旧任务未使用选择功能）时保持历史行为：全部经历参与润色。
+    """
+    if not ref_ids:
+        return originals
+    wanted = set(ref_ids)
+    return [x for x in originals if x.get("ref_id") in wanted]
+
+
 def preserve_identity(originals: list, polished: list) -> list:
     """以档案事实字段为准逐字段锁定，只接受润色后的 description / result。
 
@@ -78,9 +89,14 @@ async def polish_experiences(
     model: str,
     length: str = "fresh",
     custom_pages: int = None,
+    ref_ids: list | None = None,
 ) -> list:
-    """把档案中的真实实习/项目经历逐条对照 JD 润色，事实字段保持不变。"""
-    originals = collect_real_experiences(user_profile)
+    """把档案中的真实实习/项目经历逐条对照 JD 润色，事实字段保持不变。
+
+    ref_ids 为用户勾选参与润色的经历标识：只润色勾选条目，
+    未勾选的经历既不润色也不写入简历。
+    """
+    originals = select_experiences(collect_real_experiences(user_profile), ref_ids)
     if not originals:
         return []
     budget = get_length_budget(length, custom_pages)

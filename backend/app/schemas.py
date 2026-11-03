@@ -162,10 +162,12 @@ class ResumeCreate(BaseModel):
     template: str = "classic"
     length: str = "fresh"
     custom_pages: Optional[int] = None
+    truncate_strategy: str = "time_priority"
 
 
 class RebuildIn(BaseModel):
     template: str = ""
+    truncate_strategy: Optional[str] = None
 
 
 class ResumeUpdateIn(BaseModel):
@@ -205,6 +207,11 @@ class FabricateIn(BaseModel):
     extra_jd: str = ""
 
 
+class PolishIn(BaseModel):
+    """润色真实经历时勾选的经历 ref_id（如 internship-0 / project-1）。"""
+    ref_ids: List[str] = []
+
+
 class FabricateReviseIn(BaseModel):
     experiences: List[dict] = []
     feedback: str = ""
@@ -223,6 +230,12 @@ class AnswerItem(BaseModel):
 
 class AnswersIn(BaseModel):
     answers: List[AnswerItem] = []
+    draft: bool = False  # 草稿保存：仅落库答案，不推进任务状态
+
+
+class QuestionRegenerateIn(BaseModel):
+    question_id: str
+    topic: str = ""
 
 
 class SeAnswersIn(BaseModel):
@@ -234,6 +247,15 @@ class SelfEvalGenerateIn(BaseModel):
     resume_id: Optional[int] = None
     answers: List[AnswerItem] = []
     supplement: str = ""
+    previous: str = ""  # 上一版正文，用于「换一版」时避免雷同
+
+
+class CoverLetterGenerateIn(BaseModel):
+    tone: str = "professional"  # professional / enthusiastic / concise
+
+
+class CoverLetterSaveIn(BaseModel):
+    content: str
 
 
 class SelfEvalRecordIn(BaseModel):
@@ -274,6 +296,7 @@ class ResumeOut(BaseModel):
     answers: list = []
     fabricated: list = []
     polished_experiences: list = []
+    polish_selection: list = []
     timeline_warnings: List[str] = []
     interview_prep: dict = {}
     se_questions: list = []
@@ -282,6 +305,9 @@ class ResumeOut(BaseModel):
     progress: str = ""
     personal_summary: str
     self_evaluation: str
+    cover_letter: str = ""
+    cover_letter_tone: str = "professional"
+    truncate_strategy: str = "time_priority"
     output_path: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -294,7 +320,7 @@ class ResumeOut(BaseModel):
 
     @field_validator(
         "questions", "answers", "fabricated", "polished_experiences",
-        "timeline_warnings", "sections",
+        "polish_selection", "timeline_warnings", "sections",
         "se_questions", "se_answers", "skills_curated", mode="before")
     @classmethod
     def _coerce_list(cls, v):
@@ -302,7 +328,8 @@ class ResumeOut(BaseModel):
 
     @field_validator(
         "jd_text", "target_position", "expected_salary", "status", "personal_summary",
-        "self_evaluation", "output_path", "progress", "template", "length", mode="before")
+        "self_evaluation", "output_path", "progress", "template", "length",
+        "cover_letter", "cover_letter_tone", "truncate_strategy", mode="before")
     @classmethod
     def _coerce_str(cls, v):
         return v if isinstance(v, str) else ""

@@ -27,7 +27,7 @@ from ..resume_generator import (
     _set_run,
     _skill_bar,
 )
-from ..prompting import get_length_budget
+from ..prompting import get_length_budget, set_budget_strategy
 
 # 原版配色：标题/装饰深蓝 #254665，正文灰蓝 #5B5B5B；高亮仍用项目约定的强调蓝
 BLUE = RGBColor(0x25, 0x46, 0x65)
@@ -200,13 +200,18 @@ def _field_line(cell, label, value):
 def render(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
            target_position="", sections=None, fabricated=None,
            skills_curated=None, expected_salary="", include_salary=True,
-           length="fresh", custom_pages=None, polished_experiences=None) -> str:
+           length="fresh", custom_pages=None, polished_experiences=None,
+           polished_selection=None, manual_order=None,
+           truncate_strategy="time_priority") -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
+    set_budget_strategy(budget, truncate_strategy)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences)
+        user, fabricated, polished=polished_experiences,
+        manual_order=manual_order, polished_selection=polished_selection,
+        budget=budget, jd_summary=jd_summary)
     doc = _new_doc()
 
     # ===== 页首/页尾蓝色通栏条（页眉页脚固定，仿原版上下蓝条）=====

@@ -11,7 +11,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from . import llm_client
-from .prompting import get_length_budget, render_prompt
+from .prompting import get_length_budget, render_prompt, set_budget_strategy
+from . import compressor
 
 PRIMARY = RGBColor(0x1F, 0x4E, 0x79)
 
@@ -56,8 +57,46 @@ def _parse_questions(raw: str) -> list:
             "question": item.get("question") or "",
             "options": item.get("options") or [],
             "required": bool(item.get("required", True)),
+            "topic": str(item.get("topic") or ""),
+            "why": str(item.get("why") or ""),
+            "hint": str(item.get("hint") or ""),
         })
     return out
+
+
+async def generate_single_question(
+    jd_summary: dict,
+    user_profile: dict,
+    existing: list,
+    base_url: str,
+    api_key: str,
+    model: str,
+    question_id: str = "q1",
+    topic: str = "",
+) -> dict | None:
+    """替换单道题时只生成 1 道新题，避免与已有问题重复。"""
+    system, prompt = render_prompt(
+        "resume_questions",
+        jd_summary=json.dumps(jd_summary, ensure_ascii=False),
+        user_profile=json.dumps(user_profile, ensure_ascii=False),
+    )
+    extra = "\n\n额外要求：本次只生成 1 道题。"
+    if topic:
+        extra += f"新题必须围绕「{topic}」展开。"
+    others = [q.get("question") for q in existing if q.get("question")]
+    if others:
+        extra += "新题不要与以下已有问题重复：" + "；".join(others)
+    raw = await llm_client.chat(
+        base_url, api_key, model,
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt + extra}],
+        temperature=0.7, json_mode=True,
+    )
+    parsed = _parse_questions(raw)
+    if not parsed:
+        return None
+    q = parsed[0]
+    q["id"] = question_id
+    return q
 
 
 async def generate_personal_summary(
@@ -361,14 +400,22 @@ def _exp_sort_key(item):
     return end if end != (0, 0) else _parse_ym(getattr(item, "start_date", ""))
 
 
-def _merge_sections(user, fabricated, limit=None, polished=None, manual_order=None):
-    """合并杜撰经历到项目/实习/工作/其他列表，按时间新→旧排序后返回四元组。limit 用于按篇幅裁剪。
+def _merge_sections(user, fabricated, limit=None, polished=None, manual_order=None,
+                    polished_selection=None, budget=None, jd_summary=None,
+                    strategy=None):
+    """合并杜撰经历到项目/实习/工作/其他列表，按策略裁剪后返回四元组。
 
     polished 为「按 JD 润色后的真实经历」：同类型存在润色稿时，以润色稿替代档案原文
     （公司/岗位/时间不变，仅表述优化），杜撰经历仍追加在其后。
 
+    polished_selection 为用户勾选润色的经历 ref_id 列表：非空表示启用了选择，
+    此时简历只展示勾选并润色过的经历，档案中未勾选的同名类型经历一律不再展示。
+
     manual_order 为 dict，形如 {"fabricated": true, "polished_experiences": true}，
     表示用户已显式保存过该类型经历的手动排序——此时跳过按时间自动排序，尊重数组原序。
+
+    裁剪策略优先级：显式 strategy 参数 > budget["strategy"] > 默认 "time_priority"；
+    预算优先用 budget（含 max_experiences），其次 fallback 到 legacy limit 参数。
     """
     manual_order = manual_order or {}
     user_sorted_fab = bool(manual_order.get("fabricated"))
@@ -425,9 +472,14 @@ def _merge_sections(user, fabricated, limit=None, polished=None, manual_order=No
         )
         for x in (fabricated or []) if x.get("type") == "other"
     ]
-    # 有润色稿的类型用润色稿替代档案原文（润色稿本就来源于档案，事实字段一致）
-    base_projects = pol_projects if pol_projects else list(user.projects)
-    base_internships = pol_internships if pol_internships else list(user.internships)
+    if polished_selection:
+        # 启用经历选择：只展示用户勾选并润色过的经历，未勾选的档案经历不进入简历
+        base_projects = pol_projects
+        base_internships = pol_internships
+    else:
+        # 有润色稿的类型用润色稿替代档案原文（润色稿本就来源于档案，事实字段一致）
+        base_projects = pol_projects if pol_projects else list(user.projects)
+        base_internships = pol_internships if pol_internships else list(user.internships)
     projects = base_projects + fake_projects
     internships = base_internships + fake_internships
     works = fake_works
@@ -449,11 +501,27 @@ def _merge_sections(user, fabricated, limit=None, polished=None, manual_order=No
         pass
     elif fake_others:
         others.sort(key=_exp_sort_key, reverse=True)
-    if limit:
-        projects = projects[:limit]
-        internships = internships[:limit]
-        works = works[:limit]
-        others = others[:limit]
+
+    # --- 智能裁剪（替代原硬截断）---
+    # 策略来源优先级：显式 strategy 参数 > budget["strategy"] > "time_priority"
+    resolved_strategy = strategy or (budget or {}).get("strategy") or "time_priority"
+    # 如果用户显式排过序（manual_order），尊重 manual 策略
+    if not strategy and (user_sorted_pol or user_sorted_fab):
+        resolved_strategy = "manual"
+
+    # 构造裁剪预算（优先 budget，其次 legacy limit）
+    clip_budget = budget or {}
+    if not clip_budget.get("max_experiences") and limit:
+        clip_budget = {"max_experiences": int(limit)}
+
+    if clip_budget.get("max_experiences"):
+        projects, internships, works, others = compressor.compress_to_budget(
+            (projects, internships, works, others),
+            clip_budget,
+            jd_summary=jd_summary,
+            strategy=resolved_strategy,
+        )
+
     return projects, internships, works, others
 
 
@@ -499,7 +567,8 @@ def build_resume_docx(user, jd_summary, personal_summary, self_evaluation, out_d
                       skills_curated=None, expected_salary: str = "", include_salary: bool = True,
                       template: str = "classic", length: str = "fresh",
                       custom_pages: int = None, polished_experiences=None,
-                      manual_order=None) -> str:
+                      polished_selection=None, manual_order=None,
+                      truncate_strategy: str = "time_priority") -> str:
     spec = TEMPLATES.get(template)
     if spec is None:
         raise ValueError(f"未知简历模板：{template}")
@@ -508,22 +577,27 @@ def build_resume_docx(user, jd_summary, personal_summary, self_evaluation, out_d
     return spec["render"](user, jd_summary, personal_summary, self_evaluation, out_dir,
                           target_position, sections, fabricated, skills_curated,
                           expected_salary, include_salary, length, custom_pages,
-                          polished_experiences, manual_order=manual_order)
+                          polished_experiences, polished_selection=polished_selection,
+                          manual_order=manual_order,
+                          truncate_strategy=truncate_strategy)
 
 
 def _render_classic(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
                     target_position: str = "", sections=None, fabricated=None,
                     skills_curated=None, expected_salary: str = "", include_salary: bool = True,
                     length: str = "fresh", custom_pages: int = None,
-                    polished_experiences=None, manual_order=None) -> str:
+                    polished_experiences=None, polished_selection=None,
+                    manual_order=None, truncate_strategy: str = "time_priority") -> str:
     # sections 为空/None 表示包含全部模块；否则仅包含勾选模块
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
+    set_budget_strategy(budget, truncate_strategy)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences,
-        manual_order=manual_order)
+        user, fabricated, polished=polished_experiences,
+        manual_order=manual_order, polished_selection=polished_selection,
+        budget=budget, jd_summary=jd_summary)
 
     doc = _new_doc()
 
@@ -751,14 +825,17 @@ def _render_split(user, jd_summary, personal_summary, self_evaluation, out_dir: 
                   target_position: str = "", sections=None, fabricated=None,
                   skills_curated=None, expected_salary: str = "", include_salary: bool = True,
                   length: str = "fresh", custom_pages: int = None,
-                  polished_experiences=None, manual_order=None) -> str:
+                  polished_experiences=None, polished_selection=None,
+                  manual_order=None, truncate_strategy: str = "time_priority") -> str:
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
+    set_budget_strategy(budget, truncate_strategy)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences,
-        manual_order=manual_order)
+        user, fabricated, polished=polished_experiences,
+        manual_order=manual_order, polished_selection=polished_selection,
+        budget=budget, jd_summary=jd_summary)
 
     doc = _new_doc()
     # 双栏：左列侧边栏，右列主栏，隐藏边框

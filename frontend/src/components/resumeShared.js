@@ -43,6 +43,7 @@ export function sortByTimeDesc(list) {
 // 合并经历（与后端 _merge_sections 一致）：
 // 润色稿（polished_experiences）替代同类型档案原文，杜撰经历追加，按时间排序并按篇幅预算裁剪
 // 排序策略：默认按时间新→旧自动排；manual_order 标记时尊重数组顺序（用户手动保存过排序）
+// 经历选择：polish_selection 非空时只展示用户勾选并润色过的经历，未勾选的档案经历不展示
 export function mergeExperiences(ctx) {
   const limit = ctx.budget?.max_experiences || 0
   const user = ctx.user || {}
@@ -62,8 +63,9 @@ export function mergeExperiences(ctx) {
   const clip = (list) => (limit ? list.slice(0, limit) : list)
   const polProjects = polOf('project')
   const polInternships = polOf('internship').map(asExp)
-  const baseProj = polProjects.length ? polProjects : (user.projects || [])
-  const baseIntern = polInternships.length ? polInternships : (user.internships || [])
+  const selectionActive = (ctx.polish_selection || []).length > 0
+  const baseProj = selectionActive ? polProjects : (polProjects.length ? polProjects : (user.projects || []))
+  const baseIntern = selectionActive ? polInternships : (polInternships.length ? polInternships : (user.internships || []))
   const fakeProj = fakeOf('project')
   const fakeIntern = fakeExp('internship')
   const fakeWorks = fakeExp('work')

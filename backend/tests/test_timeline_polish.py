@@ -1,9 +1,10 @@
 """时间线规划/校验与经历润色的回归测试。"""
+import json
 from datetime import date
 from types import SimpleNamespace
 
 from app import crypto, models
-from app.services import polish, resume_generator, timeline
+from app.services import ats, llm_client, polish, resume_generator, timeline
 
 TODAY = date(2026, 10, 1)
 
@@ -176,6 +177,34 @@ def test_preserve_identity_keeps_dropped_item():
     assert out[1]["description"] == "d2"  # LLM 漏还：保留原文，不丢经历
 
 
+# ---------- 经历选择 ----------
+def test_select_experiences_filters_by_ref_ids():
+    originals = polish.collect_real_experiences({
+        "internships": [{"company": "A厂", "start_date": "2025.01", "end_date": "2025.03"}],
+        "projects": [{"title": "P1"}, {"title": "P2"}],
+    })
+    out = polish.select_experiences(originals, ["project-1"])
+    assert [x["ref_id"] for x in out] == ["project-1"]
+    # ref_ids 为 None/空表示旧版行为：全部参与润色
+    assert len(polish.select_experiences(originals, None)) == 3
+
+
+def test_merge_sections_selection_hides_unselected():
+    """启用经历选择后，未勾选的档案经历不进入简历。"""
+    user = SimpleNamespace(
+        projects=[SimpleNamespace(title="P1", start_date="2025.01", end_date="2025.03")],
+        internships=[SimpleNamespace(company="I1", position="实习生",
+                                     start_date="2025.04", end_date="2025.09",
+                                     description="原文", achievement="")],
+    )
+    polished = [{"type": "project", "title": "P1", "start_date": "2025.01",
+                 "end_date": "2025.03", "description": "**润色**", "result": ""}]
+    projects, internships, _, _ = resume_generator._merge_sections(
+        user, fabricated=[], polished=polished, polished_selection=["project-0"])
+    assert [p.title for p in projects] == ["P1"]
+    assert internships == []
+
+
 # ---------- 渲染合并 ----------
 def test_merge_sections_polished_replaces_real_base():
     user = SimpleNamespace(
@@ -233,6 +262,155 @@ def test_polish_save_persists_locks_facts_and_context_exposes(client, db_session
     assert "polished_experiences" in d and "timeline_warnings" in d
 
 
+def test_polish_save_respects_selection(client, db_session):
+    """手动保存润色稿时，只保留勾选经历，未勾选的档案经历不会被打包回来。"""
+    rid = _client_with_user(client, db_session)
+    user = db_session.query(models.User).filter(models.User.is_active.is_(True)).first()
+    db_session.add(models.Project(
+        user_id=user.id, title="真实项目", start_date="2025.01", end_date="2025.03",
+        description="项目原文", result=""))
+    db_session.commit()
+    resume = db_session.get(models.Resume, rid)
+    resume.polish_selection = ["project-0"]
+    db_session.commit()
+
+    r = client.post(f"/resumes/{rid}/polish/save", json={"experiences": [
+        {"type": "project", "ref_id": "project-0", "title": "真实项目",
+         "start_date": "2025.01", "end_date": "2025.03",
+         "description": "**润色后**", "result": ""}]})
+    assert r.status_code == 200
+    items = r.json()["polished_experiences"]
+    assert [x["ref_id"] for x in items] == ["project-0"]
+    assert items[0]["description"] == "**润色后**"
+
+
+def test_polish_endpoint_only_sends_selected_to_llm(client, db_session, monkeypatch):
+    """润色接口只把勾选经历发给 LLM，未勾选经历不润色、不入简历。"""
+    rid = _client_with_user(client, db_session)
+    user = db_session.query(models.User).filter(models.User.is_active.is_(True)).first()
+    for title, s, e in (("P1", "2025.01", "2025.03"), ("P2", "2025.05", "2025.07")):
+        db_session.add(models.Project(user_id=user.id, title=title,
+                                      start_date=s, end_date=e, description="原文", result=""))
+    db_session.add(models.LLMConfig(base_url="http://x", api_key=crypto.encrypt("k"), model="m"))
+    resume = db_session.get(models.Resume, rid)
+    resume.jd_summary = {"position": "后端"}
+    db_session.commit()
+
+    prompts = []
+
+    async def fake_chat(base_url, api_key, model, messages, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return json.dumps({"experiences": [{
+            "type": "project", "ref_id": "project-1", "title": "P2",
+            "role": "", "tech_stack": "", "start_date": "2025.05", "end_date": "2025.07",
+            "description": "**润色后**", "result": ""}]})
+
+    monkeypatch.setattr(llm_client, "chat", fake_chat)
+
+    r = client.post(f"/resumes/{rid}/polish", json={"ref_ids": ["project-1"]})
+    assert r.status_code == 200
+    assert r.json()["polish_selection"] == ["project-1"]
+    assert [x["ref_id"] for x in r.json()["polished_experiences"]] == ["project-1"]
+    # 发给 LLM 的经历里只有勾选的 P2
+    assert "P2" in prompts[0]
+    assert "P1" not in prompts[0]
+
+
+def test_polish_endpoint_rejects_empty_selection(client, db_session):
+    rid = _client_with_user(client, db_session)
+    db_session.add(models.LLMConfig(base_url="http://x", api_key=crypto.encrypt("k"), model="m"))
+    resume = db_session.get(models.Resume, rid)
+    resume.jd_summary = {"position": "后端"}
+    db_session.commit()
+    r = client.post(f"/resumes/{rid}/polish", json={"ref_ids": []})
+    assert r.status_code == 400
+
+
+# ---------- 必要问答 / 自我评价流程 ----------
+def _add_llm_config(db_session):
+    db_session.add(models.LLMConfig(base_url="http://x", api_key=crypto.encrypt("k"), model="m"))
+    db_session.commit()
+
+
+def test_question_parser_keeps_guidance_fields():
+    raw = json.dumps([{
+        "id": "q1", "type": "text", "question": "P2 中你负责哪部分？",
+        "options": [], "required": True,
+        "topic": "P2", "why": "确认职责边界", "hint": "写清你独立完成的部分"}])
+    q = resume_generator._parse_questions(raw)[0]
+    assert q["topic"] == "P2"
+    assert q["why"] == "确认职责边界"
+    assert q["hint"] == "写清你独立完成的部分"
+
+
+def test_answers_draft_does_not_advance_status(client, db_session):
+    rid = _client_with_user(client, db_session)
+    resume = db_session.get(models.Resume, rid)
+    resume.status = "questioning"
+    resume.questions = [{"id": "q1", "type": "text", "question": "项目亮点？"}]
+    db_session.commit()
+
+    payload = {"answers": [{"id": "q1", "question": "项目亮点？", "answer": "草稿答案"}],
+               "draft": True}
+    r = client.post(f"/resumes/{rid}/answers", json=payload)
+    assert r.status_code == 200
+    assert r.json()["status"] == "questioning"   # 草稿不推进状态
+    assert r.json()["answers"][0]["answer"] == "草稿答案"
+
+    r = client.post(f"/resumes/{rid}/answers", json={**payload, "draft": False})
+    assert r.json()["status"] == "answered"
+
+
+def test_regenerate_question_replaces_one_and_clears_its_answer(client, db_session, monkeypatch):
+    rid = _client_with_user(client, db_session)
+    _add_llm_config(db_session)
+    resume = db_session.get(models.Resume, rid)
+    resume.jd_summary = {"position": "后端"}
+    resume.questions = [
+        {"id": "q1", "type": "text", "question": "旧问题一", "required": True},
+        {"id": "q2", "type": "text", "question": "旧问题二", "required": True},
+    ]
+    resume.answers = [{"id": "q1", "question": "旧问题一", "answer": "答案一"},
+                      {"id": "q2", "question": "旧问题二", "answer": "答案二"}]
+    db_session.commit()
+
+    async def fake_single(*args, **kwargs):
+        return {"id": kwargs.get("question_id"), "type": "text", "question": "换题后的新问题",
+                "options": [], "required": True, "topic": "P2", "why": "w", "hint": "h"}
+
+    monkeypatch.setattr(resume_generator, "generate_single_question", fake_single)
+    r = client.post(f"/resumes/{rid}/questions/regenerate",
+                    json={"question_id": "q1", "topic": "P2"})
+    assert r.status_code == 200
+    qs = r.json()["questions"]
+    assert qs[0]["question"] == "换题后的新问题"
+    assert qs[1]["question"] == "旧问题二"      # 其余问题不受影响
+    answers = db_session.get(models.Resume, rid).answers
+    assert [a["id"] for a in answers] == ["q2"]  # 被换题目的旧答案已作废
+
+
+def test_self_eval_questions_put_focus_first(client, db_session, monkeypatch):
+    rid = _client_with_user(client, db_session)
+    _add_llm_config(db_session)
+
+    async def fake_chat(*args, **kwargs):
+        return json.dumps([{"id": "q1", "type": "text", "question": "代表性项目成果？",
+                            "options": [], "required": True,
+                            "topic": "项目", "why": "w", "hint": "h"}])
+
+    monkeypatch.setattr(llm_client, "chat", fake_chat)
+    resume = db_session.get(models.Resume, rid)
+    resume.jd_summary = {"position": "后端"}
+    db_session.commit()
+
+    r = client.post("/self-evaluation/questions", params={"resume_id": rid})
+    qs = r.json()["questions"]
+    assert qs[0]["id"] == "focus"               # 侧重题固定在最前
+    assert qs[0]["options"][0] == "技术深度"
+    assert qs[-1]["id"] == "supplement"         # 自由补充固定在最末
+    assert all("topic" in q for q in qs)
+
+
 def test_fabricate_save_normalizes_dates(client, db_session):
     rid = _client_with_user(client, db_session, with_internship=False)
     r = client.post(f"/resumes/{rid}/fabricate/save", json={"experiences": [
@@ -267,3 +445,73 @@ def test_real_mode_clears_fabricated_and_polished(client, db_session):
     d = r.json()
     assert d["fabricated"] == []
     assert d["polished_experiences"] == []
+
+
+# ---------- ATS 关键词定向评分 ----------
+def test_ats_detects_missing_high_importance_tech():
+    jd = {"position": "后端",
+          "tech": ["Python", "Kafka", "Redis"],
+          "soft": ["沟通", "学习"],
+          "domain": ["电商"],
+          "requirements": []}
+    prof = {
+        "skills": [{"name": "Python", "category": "语言"}],
+        "projects": [{"title": "订单系统", "tech_stack": "Python Redis", "description": "高并发下单", "result": "QPS 提升 5 倍"}],
+        "internships": [],
+    }
+    score = ats.run_ats_score(jd, prof)
+    # Kafka 缺失且为 high
+    missing_keywords = [m["keyword"] for m in score["missing"]]
+    assert "kafka" in missing_keywords
+    # Python 命中
+    hit_kws = [h["keyword"] for h in score["hit_details"]]
+    assert "python" in hit_kws
+    assert score["hit_count"] >= 1
+
+
+def test_ats_synonym_matches_case_insensitive():
+    jd = {"tech": ["FastAPI", "PostgreSQL"], "soft": [], "domain": [], "requirements": []}
+    prof = {
+        "skills": [{"name": "FAST API", "category": "框架"}],
+        "projects": [{"title": "Demo", "tech_stack": "postgres", "description": "", "result": ""}],
+        "internships": [],
+    }
+    score = ats.run_ats_score(jd, prof)
+    assert score["hit_rate"] == 1.0  # 全部命中
+    assert score["hit_count"] == 2
+
+
+def test_ats_density_shows_projects_richer_than_summary():
+    jd = {"tech": ["Kafka"], "soft": [], "domain": [], "requirements": []}
+    prof = {
+        "skills": [],
+        "projects": [{"title": "Kafka Pipeline", "tech_stack": "Kafka", "description": "用 Kafka 做流式处理", "result": ""}],
+        "internships": [],
+    }
+    score = ats.run_ats_score(jd, prof, personal_summary="我是一名后端开发者")
+    assert score["density"]["projects"] > score["density"]["summary"]
+
+
+def test_ats_score_endpoint_requires_jd(client, db_session):
+    rid = _client_with_user(client, db_session)
+    r = client.post(f"/resumes/{rid}/ats-score")
+    assert r.status_code == 400
+
+
+def test_ats_score_endpoint_returns_missing_keywords(client, db_session):
+    rid = _client_with_user(client, db_session)
+    resume = db_session.get(models.Resume, rid)
+    resume.jd_summary = {
+        "position": "后端",
+        "tech": ["Python", "Kafka"],
+        "soft": ["沟通"], "domain": [], "requirements": [],
+    }
+    db_session.commit()
+
+    r = client.post(f"/resumes/{rid}/ats-score")
+    assert r.status_code == 200
+    data = r.json()
+    assert "hit_rate" in data
+    assert "missing" in data
+    missing = [m["keyword"] for m in data["missing"]]
+    assert "kafka" in missing

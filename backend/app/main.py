@@ -26,6 +26,10 @@ for _col, _ddl in (
     ("length", "ALTER TABLE resumes ADD COLUMN length VARCHAR(20)"),
     ("custom_pages", "ALTER TABLE resumes ADD COLUMN custom_pages INTEGER"),
     ("output_paths", "ALTER TABLE resumes ADD COLUMN output_paths JSON"),
+    ("polish_selection", "ALTER TABLE resumes ADD COLUMN polish_selection JSON"),
+    ("cover_letter", "ALTER TABLE resumes ADD COLUMN cover_letter TEXT"),
+    ("cover_letter_tone", "ALTER TABLE resumes ADD COLUMN cover_letter_tone VARCHAR(20)"),
+    ("truncate_strategy", "ALTER TABLE resumes ADD COLUMN truncate_strategy VARCHAR(30)"),
 ):
     if _col not in _resume_cols:
         with engine.begin() as _conn:
@@ -58,6 +62,10 @@ with engine.begin() as _conn:
     _conn.execute(text("UPDATE resumes SET template = 'classic' WHERE template IS NULL"))
     _conn.execute(text("UPDATE resumes SET length = 'fresh' WHERE length IS NULL"))
     _conn.execute(text("UPDATE resumes SET output_paths = '{}' WHERE output_paths IS NULL"))
+    _conn.execute(text("UPDATE resumes SET polish_selection = '[]' WHERE polish_selection IS NULL"))
+    _conn.execute(text("UPDATE resumes SET cover_letter = '' WHERE cover_letter IS NULL"))
+    _conn.execute(text("UPDATE resumes SET cover_letter_tone = 'professional' WHERE cover_letter_tone IS NULL"))
+    _conn.execute(text("UPDATE resumes SET truncate_strategy = 'time_priority' WHERE truncate_strategy IS NULL"))
 
 app = FastAPI(title="AI 简历生成器", version="0.1.0")
 

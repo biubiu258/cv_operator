@@ -15,6 +15,11 @@ from ..progress import broker
 from ..services import jd_parser, profile as profile_svc
 from ..services import fabricate as fabricate_svc
 from ..services import polish as polish_svc
+from ..services import ats as ats_svc
+from ..services import anti_detection as ad_svc
+from ..services import cover_letter as cl_svc
+from ..services import cover_letter_docx as cl_docx
+from ..services import llm_client
 from ..services import resume_generator, self_evaluation as se_svc
 from ..services import timeline
 from ..services.prompting import get_length_budget
@@ -68,7 +73,9 @@ def _render_template(db: Session, resume, template: str, force: bool = False) ->
         expected_salary=salary, include_salary=resume.include_salary,
         template=template, length=resume.length, custom_pages=resume.custom_pages,
         polished_experiences=resume.polished_experiences,
-        manual_order=resume.manual_order or {})
+        polished_selection=resume.polish_selection or [],
+        manual_order=resume.manual_order or {},
+        truncate_strategy=resume.truncate_strategy or "time_priority")
     paths[template] = out_path
     resume.output_paths = paths
     resume.output_path = out_path
@@ -169,6 +176,7 @@ def get_render_context(resume_id: int, db: Session = Depends(get_db)):
         "sections": resume.sections or [],
         "fabricated": resume.fabricated or [],
         "polished_experiences": resume.polished_experiences or [],
+        "polish_selection": resume.polish_selection or [],
         "timeline_warnings": resume.timeline_warnings,
         "skills_curated": resume.skills_curated or [],
         "expected_salary": resume.expected_salary or resume.user.expected_salary or "",
@@ -179,6 +187,115 @@ def get_render_context(resume_id: int, db: Session = Depends(get_db)):
         "budget": get_length_budget(resume.length, resume.custom_pages),
         "manual_order": resume.manual_order or {},
     }
+
+
+@router.post("/resumes/{resume_id}/ats-score")
+def ats_score(resume_id: int, db: Session = Depends(get_db)):
+    """ATS 关键词定向评分：基于当前 JD 解析结果 + 档案 + 已选经历计算匹配度。
+
+    输出命中率、缺失关键词（按重要性排序）、各板块关键词密度、每个命中关键词所在板块。
+    不依赖 LLM，纯字符串匹配 + 同义词归一，毫秒级返回。
+    """
+    resume = _ensure_resume(db, resume_id)
+    if not resume.jd_summary:
+        raise HTTPException(status_code=400, detail="请先解析岗位 JD 后再评估 ATS 匹配度")
+    return ats_svc.run_ats_score(
+        resume.jd_summary,
+        profile_svc.user_profile_dict(resume.user),
+        polished_experiences=resume.polished_experiences,
+        fabricated=resume.fabricated,
+        personal_summary=resume.personal_summary or "",
+        self_evaluation=resume.self_evaluation or "",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 求职信
+# --------------------------------------------------------------------------- #
+
+@router.post("/resumes/{resume_id}/cover-letter/generate")
+async def generate_cover_letter(resume_id: int, data: schemas.CoverLetterGenerateIn,
+                                db: Session = Depends(get_db)):
+    """根据 JD + 档案 + 简历正文生成一封 200–300 字的求职信。
+
+    支持三种风格（professional / enthusiastic / concise），默认 professional。
+    会存入 resume.cover_letter 与 resume.cover_letter_tone，后续「换一版」可直接
+    再次调用生成接口覆盖。
+    """
+    ctx = ensure_llm_ready(db)
+    resume = _ensure_resume(db, resume_id)
+    prof = profile_svc.user_profile_dict(resume.user)
+    if not resume.jd_summary:
+        raise HTTPException(status_code=400, detail="请先解析岗位 JD 后再生成求职信")
+
+    resume_content = _collect_resume_content(resume, prof)
+    content = await cl_svc.generate_cover_letter(
+        resume.jd_summary, prof, resume_content,
+        ctx["base_url"], ctx["api_key"], ctx["model"],
+        target_position=resume.target_position or resume.jd_summary.get("position", ""),
+        tone=data.tone,
+    )
+    resume.cover_letter = content
+    resume.cover_letter_tone = data.tone
+    db.commit()
+    db.refresh(resume)
+    return {
+        "content": content,
+        "word_count": cl_svc.word_count(content),
+        "tone": data.tone,
+    }
+
+
+@router.post("/resumes/{resume_id}/cover-letter/save", response_model=schemas.ResumeOut)
+def save_cover_letter(resume_id: int, data: schemas.CoverLetterSaveIn,
+                      db: Session = Depends(get_db)):
+    """手动保存用户编辑后的求职信正文。"""
+    resume = _ensure_resume(db, resume_id)
+    resume.cover_letter = data.content
+    db.commit()
+    db.refresh(resume)
+    return resume
+
+
+@router.get("/resumes/{resume_id}/cover-letter/download")
+def download_cover_letter(resume_id: int, db: Session = Depends(get_db)):
+    """把当前求职信正文渲染为 A4 docx 并返回下载。"""
+    resume = _ensure_resume(db, resume_id)
+    if not resume.cover_letter:
+        raise HTTPException(status_code=400, detail="还没有求职信内容，请先生成或编辑保存")
+    prof = profile_svc.user_profile_dict(resume.user)
+    path = cl_docx.render_cover_letter(
+        content=resume.cover_letter,
+        name=prof.get("name", ""),
+        email=prof.get("email", ""),
+        phone=prof.get("phone", ""),
+        location=prof.get("location", ""),
+        target_position=resume.target_position or resume.jd_summary.get("position", ""),
+        out_dir=OUTPUT_DIR,
+    )
+    return FileResponse(path, filename=Path(path).name, media_type=_MT_DOCX)
+
+
+def _collect_resume_content(resume, prof: dict) -> str:
+    """把当前简历所有已选板块拼成一段摘要，供求职信生成做上下文。"""
+    parts = []
+    if resume.personal_summary:
+        parts.append(f"个人简介：{resume.personal_summary}")
+    if resume.skills_curated:
+        parts.append("技能：" + "、".join(s.get("name", "") for s in resume.skills_curated if isinstance(s, dict)))
+    exps = (resume.polished_experiences or []) + (resume.fabricated or [])
+    for x in exps:
+        t = x.get("type")
+        if t == "internship":
+            head = f"{x.get('company','')} {x.get('position','')}"
+        elif t == "project":
+            head = f"项目 {x.get('title','')}"
+        else:
+            head = x.get("title") or x.get("company") or ""
+        body = " ".join(filter(None, [x.get("description", ""), x.get("result", "")]))
+        if head:
+            parts.append(f"{head}：{body}")
+    return "\n".join(parts)
 
 
 # 可回退的步骤及其展示名（回退后保留该步已填内容，清除其后的全部产物）
@@ -224,6 +341,7 @@ def rollback(resume_id: int, data: schemas.RollbackIn, db: Session = Depends(get
     else:  # jd
         resume.fabricated = []
         resume.polished_experiences = []
+        resume.polish_selection = []
         resume.interview_prep = {}
         resume.questions = []
         resume.answers = []
@@ -294,6 +412,7 @@ async def fabricate(resume_id: int, data: schemas.FabricateIn, db: Session = Dep
     # 三种经历模式互斥：杜撰 / 按 JD 润色真实经历 / 原文使用真实经历。
     # 进入杜撰或原文模式时清空另一模式的产物，避免旧经历残留混入简历。
     resume.polished_experiences = []
+    resume.polish_selection = []
     fabricated = []
     if data.fabricate:
         _set_progress(db, resume, "正在生成经历蓝本…")
@@ -377,8 +496,12 @@ async def confirm_fabricate(resume_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/resumes/{resume_id}/polish", response_model=schemas.ResumeOut)
-async def polish(resume_id: int, db: Session = Depends(get_db)):
-    """按 JD 润色档案中的真实经历：只优化表述，公司/岗位/时间等事实保持不变。"""
+async def polish(resume_id: int, data: schemas.PolishIn = None,
+                 db: Session = Depends(get_db)):
+    """按 JD 润色档案中的真实经历：只优化表述，公司/岗位/时间等事实保持不变。
+
+    支持选择经历：传入 ref_ids 时只润色勾选条目，未勾选的经历不会写入简历。
+    """
     ctx = ensure_llm_ready(db)
     resume = _ensure_resume(db, resume_id)
     prof = profile_svc.user_profile_dict(resume.user)
@@ -390,13 +513,22 @@ async def polish(resume_id: int, db: Session = Depends(get_db)):
     if not (prof.get("internships") or prof.get("projects")):
         raise HTTPException(status_code=400, detail="档案中还没有实习或项目经历，暂无可润色内容")
 
-    _set_progress(db, resume, "正在按 JD 润色真实经历…")
+    # ref_ids 为 None 表示旧版调用（未启用选择），保持全部经历润色的历史行为
+    ref_ids = data.ref_ids if data else None
+    available = {x["ref_id"] for x in polish_svc.collect_real_experiences(prof)}
+    ref_ids = [r for r in (ref_ids or []) if r in available] if ref_ids is not None else None
+    if ref_ids is not None and not ref_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一段需要润色的经历")
+
+    _set_progress(db, resume, "正在按 JD 润色勾选的真实经历…")
     polished = await polish_svc.polish_experiences(
         resume.jd_summary, prof, ctx["base_url"], ctx["api_key"], ctx["model"],
-        length=resume.length, custom_pages=resume.custom_pages)
+        length=resume.length, custom_pages=resume.custom_pages,
+        ref_ids=ref_ids)
     # 润色与杜撰互斥，进入润色模式时清空杜撰产物
     resume.fabricated = []
     resume.polished_experiences = polished
+    resume.polish_selection = ref_ids or []
     resume.progress = ""
     db.commit()
     db.refresh(resume)
@@ -431,7 +563,9 @@ def save_polish(resume_id: int, data: schemas.ExperiencesSaveIn, db: Session = D
     并做日期规范化，保证润色模式不会经手动编辑变成虚构经历。
     """
     resume = _ensure_resume(db, resume_id)
-    originals = polish_svc.collect_real_experiences(profile_svc.user_profile_dict(resume.user))
+    originals = polish_svc.select_experiences(
+        polish_svc.collect_real_experiences(profile_svc.user_profile_dict(resume.user)),
+        resume.polish_selection or None)
     locked = polish_svc.preserve_identity(originals, data.experiences)
     resume.polished_experiences = timeline.normalize_experiences(locked)
     db.commit()
@@ -452,6 +586,7 @@ async def gen_questions(resume_id: int, db: Session = Depends(get_db)):
         resume.jd_summary, profile_svc.user_profile_dict(resume.user),
         ctx["base_url"], ctx["api_key"], ctx["model"])
     resume.questions = questions
+    resume.answers = []  # 问题已整体替换，旧答案不再对应
     resume.status = "questioning"
     resume.progress = ""
     db.commit()
@@ -459,11 +594,41 @@ async def gen_questions(resume_id: int, db: Session = Depends(get_db)):
     return {"questions": questions}
 
 
+@router.post("/resumes/{resume_id}/questions/regenerate")
+async def regenerate_question(resume_id: int, data: schemas.QuestionRegenerateIn,
+                              db: Session = Depends(get_db)):
+    """换一题：只重新生成指定的一个问题，其余问题与已答内容保持不变。"""
+    ctx = ensure_llm_ready(db)
+    resume = _ensure_resume(db, resume_id)
+    if not resume.questions:
+        raise HTTPException(status_code=400, detail="当前还没有必要问题，请先生成问题")
+    if data.question_id not in [q.get("id") for q in resume.questions]:
+        raise HTTPException(status_code=404, detail="要替换的问题不存在")
+
+    q = await resume_generator.generate_single_question(
+        resume.jd_summary or {}, profile_svc.user_profile_dict(resume.user),
+        resume.questions, ctx["base_url"], ctx["api_key"], ctx["model"],
+        question_id=data.question_id, topic=data.topic)
+    if not q:
+        raise HTTPException(status_code=400, detail="换题失败，请稍后重试")
+
+    qs = [q if item.get("id") == data.question_id else item for item in resume.questions]
+    resume.questions = qs
+    # 被替换的问题原答案作废，避免摘要与题目不一致
+    resume.answers = [a for a in (resume.answers or [])
+                      if a.get("id") != data.question_id]
+    db.commit()
+    db.refresh(resume)
+    return {"questions": qs, "question": q}
+
+
 @router.post("/resumes/{resume_id}/answers", response_model=schemas.ResumeOut)
 def submit_answers(resume_id: int, data: schemas.AnswersIn, db: Session = Depends(get_db)):
     resume = _ensure_resume(db, resume_id)
     resume.answers = [a.model_dump() for a in data.answers]
-    resume.status = "answered"
+    # 草稿保存不改变任务状态，避免中途刷新页面被误判为已完成问答
+    if not data.draft:
+        resume.status = "answered"
     db.commit()
     db.refresh(resume)
     return resume
@@ -529,13 +694,15 @@ async def generate(resume_id: int, db: Session = Depends(get_db)):
 
 @router.post("/resumes/{resume_id}/rebuild", response_model=schemas.ResumeOut)
 def rebuild(resume_id: int, data: schemas.RebuildIn, db: Session = Depends(get_db)):
-    """用已存内容重建/复用 docx（不重新调用 LLM），可选切换模板。
+    """用已存内容重建/复用 docx（不重新调用 LLM），可选切换模板或裁剪策略。
 
     切换模板时，若该模板已生成过则直接复用，不重复生成；
     「重新生成」按钮（未传 template）则强制重新排版当前模板。
     网页版模板（kind=vue）仅持久化选择，不生成 docx。
     """
     resume = _ensure_resume(db, resume_id)
+    if data.truncate_strategy:
+        resume.truncate_strategy = data.truncate_strategy
     if data.template:
         if not resume_generator.has_template(data.template):
             raise HTTPException(status_code=400, detail="不支持的模板类型")
@@ -580,3 +747,111 @@ def download(resume_id: int, format: str = "docx", db: Session = Depends(get_db)
                             media_type="application/pdf")
     return FileResponse(resume.output_path, filename=Path(resume.output_path).name,
                         media_type=_MT_DOCX)
+
+
+# ---------- T8 反伪造检测 ----------
+
+def _collect_experiences_for_detect(resume) -> list[dict]:
+    """收集当前简历里的所有经历（润色稿优先 → 杜撰稿 → 档案原文）。"""
+    exps: list[dict] = []
+    if resume.polished_experiences:
+        exps.extend(resume.polished_experiences)
+    if resume.fabricated:
+        exps.extend(resume.fabricated)
+    if not exps:
+        for p in resume.user.projects:
+            exps.append({
+                "type": "project", "title": getattr(p, "title", "") or "",
+                "role": getattr(p, "role", "") or "",
+                "start_date": getattr(p, "start_date", "") or "",
+                "end_date": getattr(p, "end_date", "") or "",
+                "tech_stack": getattr(p, "tech_stack", "") or "",
+                "description": getattr(p, "description", "") or "",
+                "result": getattr(p, "result", "") or "",
+            })
+        for i in resume.user.internships:
+            exps.append({
+                "type": "internship", "title": getattr(i, "company", "") or "",
+                "role": getattr(i, "position", "") or "",
+                "start_date": getattr(i, "start_date", "") or "",
+                "end_date": getattr(i, "end_date", "") or "",
+                "tech_stack": "",
+                "description": getattr(i, "description", "") or "",
+                "result": getattr(i, "achievement", "") or "",
+            })
+    return exps
+
+
+@router.post("/resumes/{resume_id}/anti-detect")
+def anti_detect(resume_id: int, db: Session = Depends(get_db)):
+    """对当前简历跑反伪造检测，返回结构化评分 + 命中规则。纯只读，不改 DB。"""
+    resume = _ensure_resume(db, resume_id)
+    exps = _collect_experiences_for_detect(resume)
+    result = ad_svc.detect_all(exps)
+    result["experience_sources"] = {
+        "polished": len(resume.polished_experiences or []),
+        "fabricated": len(resume.fabricated or []),
+    }
+    return result
+
+
+@router.post("/resumes/{resume_id}/anti-detect/optimize", response_model=schemas.ResumeOut)
+async def anti_detect_optimize(resume_id: int, db: Session = Depends(get_db)):
+    """自动优化：跑检测 → 如果 score >= 0.4，调用 LLM 按 avoid_ai_patterns.md 重写经历。
+
+    重写结果会写回 `polished_experiences`（优先）或 `fabricated`。不调 LLM 时（检测 score < 0.4）直接返回原 resume。
+    """
+    ctx = ensure_llm_ready(db)
+    resume = _ensure_resume(db, resume_id)
+    exps = _collect_experiences_for_detect(resume)
+    report = ad_svc.detect_all(exps)
+
+    if report["score"] < 0.4:
+        resume._anti_detect_result = report
+        db.commit()
+        db.refresh(resume)
+        return resume
+
+    # 构造优化提示词：把检测报告命中的规则作为改写重点
+    from ..services.prompting import render_prompt
+    import json as _json
+    system, prompt = render_prompt(
+        "avoid_ai_patterns",
+        experiences=_json.dumps(exps, ensure_ascii=False),
+        jd_summary=_json.dumps(resume.jd_summary or {}, ensure_ascii=False),
+        anti_detect_report=_json.dumps({
+            "score": report["score"],
+            "verdict": report["verdict"],
+            "triggered_rules": report["triggered_rules"],
+            "rule_descriptions": {k: v["description"] for k, v in report["rules"].items()
+                                  if v["danger"] >= 0.3},
+        }, ensure_ascii=False),
+    )
+    raw = await llm_client.chat(
+        ctx["base_url"], ctx["api_key"], ctx["model"],
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        temperature=0.6, json_mode=True,
+    )
+    try:
+        data = _json.loads(raw)
+        rewritten = data.get("experiences") if isinstance(data, dict) else None
+        if not isinstance(rewritten, list) or not rewritten:
+            rewritten = exps  # 兜底：保留原样
+    except Exception:
+        rewritten = exps
+
+    # 回写到 resume（优先 polished → 否则 fabricated）
+    if resume.polished_experiences:
+        resume.polished_experiences = rewritten
+        resume.anti_detect_optimize_target = "polished_experiences"
+    elif resume.fabricated:
+        resume.fabricated = rewritten
+        resume.anti_detect_optimize_target = "fabricated"
+
+    # 再跑一次检测，看优化效果
+    new_report = ad_svc.detect_all(rewritten)
+    resume.anti_detect_result = {"before": report, "after": new_report}
+
+    db.commit()
+    db.refresh(resume)
+    return resume

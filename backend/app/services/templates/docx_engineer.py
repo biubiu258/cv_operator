@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from docx import Document
 from docx.oxml.ns import qn
 
-from ..prompting import get_length_budget
+from ..prompting import get_length_budget, set_budget_strategy
 from ..resume_generator import _enabled, _merge_sections, _save_docx
 
 TEMPLATE_PATH = Path(__file__).parent / "assets" / "engineer.docx"
@@ -138,14 +138,19 @@ def _skill_name_prof(skill) -> tuple:
 def render(user, jd_summary, personal_summary, self_evaluation, out_dir: Path,
            target_position="", sections=None, fabricated=None,
            skills_curated=None, expected_salary="", include_salary=True,
-           length="fresh", custom_pages=None, polished_experiences=None) -> str:
+           length="fresh", custom_pages=None, polished_experiences=None,
+           polished_selection=None, manual_order=None,
+           truncate_strategy="time_priority") -> str:
     """填充工程师模板并返回生成的 docx 路径。"""
     def enabled(key: str) -> bool:
         return _enabled(sections, key)
 
     budget = get_length_budget(length, custom_pages)
+    set_budget_strategy(budget, truncate_strategy)
     projects, internships, works, others = _merge_sections(
-        user, fabricated, limit=budget["max_experiences"], polished=polished_experiences)
+        user, fabricated, polished=polished_experiences,
+        manual_order=manual_order, polished_selection=polished_selection,
+        budget=budget, jd_summary=jd_summary)
 
     doc = Document(str(TEMPLATE_PATH))
     paras = doc.paragraphs
